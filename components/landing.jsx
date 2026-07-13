@@ -804,8 +804,13 @@ function CTASection({ onAuth, onBookDemo }) {
 }
 
 // ================= Footer =================
-function PremiumFooter() {
+function PremiumFooter({ settings }) {
   const [year] = useState(new Date().getFullYear())
+  const platformName = settings?.platformName || 'DutyOnTrack'
+  const companyName = settings?.companyName || platformName
+  const supportEmail = settings?.supportEmail || ''
+  const supportWhatsapp = settings?.supportWhatsapp || ''
+  const supportPhone = settings?.supportPhone || supportWhatsapp
   return (
     <footer className="relative border-t border-white/10 bg-[#050914]">
       <div className="max-w-7xl mx-auto px-4 md:px-8 py-16 grid md:grid-cols-6 gap-8">
@@ -847,9 +852,18 @@ function PremiumFooter() {
         <div>
           <div className="text-white text-sm font-semibold mb-3">Contact</div>
           <ul className="space-y-2 text-sm text-white/60">
-            <li>hello@dutyontrack.in</li>
-            <li>WhatsApp support</li>
-            <li>+91 · 24×7 chat</li>
+            {supportEmail && <li><a href={`mailto:${supportEmail}`} className="hover:text-white">{supportEmail}</a></li>}
+            {supportWhatsapp && (
+              <li>
+                <a href={`https://wa.me/${String(supportWhatsapp).replace(/[^0-9]/g, '')}`} target="_blank" rel="noreferrer" className="hover:text-white">
+                  WhatsApp {supportWhatsapp}
+                </a>
+              </li>
+            )}
+            {supportPhone && supportPhone !== supportWhatsapp && (
+              <li><a href={`tel:${supportPhone}`} className="hover:text-white">Call {supportPhone}</a></li>
+            )}
+            {!supportEmail && !supportWhatsapp && <li className="text-white/40">Contact details coming soon</li>}
           </ul>
           <div className="flex gap-2 mt-4">
             {['𝕏', 'in', 'f', 'ig'].map((s) => (
@@ -860,7 +874,7 @@ function PremiumFooter() {
       </div>
       <div className="border-t border-white/10 py-5">
         <div className="max-w-7xl mx-auto px-4 md:px-8 flex flex-col md:flex-row justify-between items-center gap-3 text-xs text-white/40">
-          <div>© {year} DutyOnTrack. All rights reserved.</div>
+          <div>© {year} {companyName}. All rights reserved.</div>
           <div className="flex items-center gap-4">
             <span className="inline-flex items-center gap-1"><Lock className="h-3 w-3" /> SOC-2 ready</span>
             <span>Made with ♥ for staffing agencies</span>
@@ -872,8 +886,11 @@ function PremiumFooter() {
 }
 
 // ================= Book Demo Dialog (super light) =================
-function BookDemoOverlay({ open, onClose }) {
+function BookDemoOverlay({ open, onClose, settings }) {
   if (!open) return null
+  const wa = settings?.supportWhatsapp ? String(settings.supportWhatsapp).replace(/[^0-9]/g, '') : ''
+  const email = settings?.supportEmail || ''
+  const msg = encodeURIComponent(settings?.defaultMessage || 'Hi, I want a DutyOnTrack demo')
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" onClick={onClose}>
       <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
@@ -889,12 +906,19 @@ function BookDemoOverlay({ open, onClose }) {
           <li className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-cyan-300" /> No obligation, no card</li>
         </ul>
         <div className="mt-5 flex flex-col gap-2">
-          <a href="https://wa.me/919999999999?text=Hi%20I%20want%20a%20DutyOnTrack%20demo" target="_blank" rel="noreferrer">
-            <Button className="w-full bg-emerald-500 hover:bg-emerald-600 text-white gap-2">💬 Chat on WhatsApp</Button>
-          </a>
-          <a href="mailto:hello@dutyontrack.in?subject=Book%20a%20demo">
-            <Button variant="outline" className="w-full border-white/20 bg-white/5 text-white hover:bg-white/10 gap-2">✉ Email us</Button>
-          </a>
+          {wa && (
+            <a href={`https://wa.me/${wa}?text=${msg}`} target="_blank" rel="noreferrer">
+              <Button className="w-full bg-emerald-500 hover:bg-emerald-600 text-white gap-2">💬 Chat on WhatsApp</Button>
+            </a>
+          )}
+          {email && (
+            <a href={`mailto:${email}?subject=Book%20a%20demo`}>
+              <Button variant="outline" className="w-full border-white/20 bg-white/5 text-white hover:bg-white/10 gap-2">✉ Email us</Button>
+            </a>
+          )}
+          {!wa && !email && (
+            <div className="text-xs text-white/50 text-center">Support contact will be visible once configured by admin.</div>
+          )}
         </div>
       </motion.div>
     </div>
@@ -904,8 +928,10 @@ function BookDemoOverlay({ open, onClose }) {
 // ================= Landing (default export) =================
 export function Landing({ onAuth }) {
   const [demoOpen, setDemoOpen] = useState(false)
+  const [settings, setSettings] = useState(null)
   useEffect(() => {
     document.documentElement.style.scrollBehavior = 'smooth'
+    fetch('/api/settings/public').then((r) => r.json()).then(setSettings).catch(() => {})
     return () => { document.documentElement.style.scrollBehavior = 'auto' }
   }, [])
   return (
@@ -921,8 +947,8 @@ export function Landing({ onAuth }) {
       <TestimonialsSection />
       <FaqSection />
       <CTASection onAuth={onAuth} onBookDemo={() => setDemoOpen(true)} />
-      <PremiumFooter />
-      <BookDemoOverlay open={demoOpen} onClose={() => setDemoOpen(false)} />
+      <PremiumFooter settings={settings} />
+      <BookDemoOverlay open={demoOpen} onClose={() => setDemoOpen(false)} settings={settings} />
     </div>
   )
 }
