@@ -19,6 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts'
+import { Landing as PremiumLanding } from '@/components/landing'
 
 // ============================= Utilities =============================
 const TOKEN_KEY = 'dot_token'
@@ -3504,7 +3505,7 @@ function App() {
   }
   if (screen === 'setup') return <SetupWizard onComplete={onSetupComplete} />
   if (screen === 'superadmin') return <SuperAdminApp user={user} onLogout={logout} />
-  if (screen === 'landing') return <Landing onAuth={(mode) => { setAuthMode(mode); setScreen('auth') }} />
+  if (screen === 'landing') return <PremiumLanding onAuth={(mode) => { setAuthMode(mode); setScreen('auth') }} />
   if (screen === 'auth') return <AuthScreen initialMode={authMode} onSuccess={onAuthSuccess} onBack={() => setScreen('landing')} />
 
   return (
