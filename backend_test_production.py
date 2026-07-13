@@ -98,18 +98,18 @@ if result:
 # POST /setup/complete (if needed)
 if result and result.get('needsSetup'):
     setup_data = {
-        "name": "Super Admin",
-        "email": "superadmin@dutyontrack.com",
-        "password": "SuperSecure123!",
-        "phone": "+919876543210",
+        "name": "Priyanshu9849",
+        "email": "priyanshupandey0078@gmail.com",
+        "password": "SuperSecure999!",
+        "phone": "+919506333650",
         "platformName": "DutyOnTrack",
-        "supportWhatsapp": "+919876543210",
-        "supportEmail": "support@dutyontrack.com",
-        "accountHolderName": "DutyOnTrack Pvt Ltd",
-        "bankName": "HDFC Bank",
-        "accountNumber": "50200012345678",
-        "ifscCode": "HDFC0001234",
-        "upiId": "dutyontrack@hdfc"
+        "supportWhatsapp": "+917376605611",
+        "supportEmail": "tathaast@gmail.com",
+        "accountHolderName": "Priyanshu Pandey",
+        "bankName": "Kotak Mahindra Bank",
+        "accountNumber": "3345626294",
+        "ifscCode": "KKBK0005291",
+        "upiId": "priyanshupandey-01@ybl"
     }
     setup_result = test_request("POST", "/setup/complete", data=setup_data, 
                                 desc="1.2 POST /setup/complete creates super admin")
@@ -119,7 +119,7 @@ if result and result.get('needsSetup'):
         test_data["super_admin"]["password"] = setup_data["password"]
 else:
     # Login with existing super admin
-    login_data = {"email": "superadmin@dutyontrack.com", "password": "SuperSecure123!"}
+    login_data = {"email": "priyanshupandey0078@gmail.com", "password": "SuperSecure99!"}
     login_result = test_request("POST", "/auth/login", data=login_data, 
                                desc="1.2 Login existing super admin")
     if login_result:
