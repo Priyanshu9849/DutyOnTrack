@@ -20,6 +20,11 @@ async function connectToMongo() {
       await db.collection('vendors').createIndex({ agencyId: 1 })
       await db.collection('placements').createIndex({ agencyId: 1 })
       await db.collection('activities').createIndex({ agencyId: 1, createdAt: -1 })
+      await db.collection('attendance').createIndex({ agencyId: 1, staffId: 1, date: 1 }, { unique: true })
+      await db.collection('salary_payments').createIndex({ agencyId: 1, staffId: 1, month: 1 })
+      await db.collection('expenses').createIndex({ agencyId: 1, date: -1 })
+      await db.collection('incomes').createIndex({ agencyId: 1, date: -1 })
+      await db.collection('invoices').createIndex({ agencyId: 1, createdAt: -1 })
     } catch (e) {}
   }
   return db
@@ -132,6 +137,46 @@ function calcPlacement(p) {
   }
   const agencyProfit = clientBill - staffSalary - vendorCommission
   return { workingDays, clientBill, staffSalary, vendorCommission, agencyProfit }
+}
+
+// Backfill attendance from joinDate to today (or offDate) as Present unless already present
+async function backfillAttendance(database, placement) {
+  if (!placement?.joinDate || !placement?.staffId) return
+  const start = new Date(placement.joinDate)
+  const endRaw = placement.offDate ? new Date(placement.offDate) : new Date()
+  const end = endRaw > new Date() ? new Date() : endRaw
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) return
+  const days = []
+  const cur = new Date(start.getFullYear(), start.getMonth(), start.getDate())
+  const stop = new Date(end.getFullYear(), end.getMonth(), end.getDate())
+  while (cur <= stop) {
+    days.push(cur.toISOString().slice(0, 10))
+    cur.setDate(cur.getDate() + 1)
+    if (days.length > 400) break // safety
+  }
+  if (!days.length) return
+  const ops = days.map((date) => ({
+    updateOne: {
+      filter: { agencyId: placement.agencyId, staffId: placement.staffId, date },
+      update: { $setOnInsert: { id: uuidv4(), agencyId: placement.agencyId, staffId: placement.staffId, date, status: 'P', placementId: placement.id, notes: '', createdAt: new Date() } },
+      upsert: true,
+    },
+  }))
+  try { await database.collection('attendance').bulkWrite(ops, { ordered: false }) } catch (e) {}
+}
+
+// Get attendance days count for a staff+month with weights
+function attendanceStats(entries) {
+  let present = 0, absent = 0, half = 0, leave = 0, paidLeave = 0, late = 0, effective = 0
+  for (const a of entries) {
+    if (a.status === 'P') { present++; effective += 1 }
+    else if (a.status === 'A') { absent++ }
+    else if (a.status === 'H') { half++; effective += 0.5 }
+    else if (a.status === 'LATE') { late++; effective += 1 }
+    else if (a.status === 'LEAVE_PAID') { paidLeave++; effective += 1 }
+    else if (a.status === 'LEAVE') { leave++ }
+  }
+  return { present, absent, half, leave, paidLeave, late, effective, total: entries.length }
 }
 
 // ============ Route Handler ============
@@ -513,6 +558,9 @@ async function handleRoute(request, { params }) {
       // Update staff status
       await database.collection('staff').updateOne({ id: b.staffId, agencyId }, { $set: { status: 'onduty', currentPlacementId: doc.id } })
 
+      // Auto-backfill attendance as Present for every day from joinDate to today (or offDate)
+      await backfillAttendance(database, doc)
+
       const client = await database.collection('clients').findOne({ id: b.clientId, agencyId })
       const staff = await database.collection('staff').findOne({ id: b.staffId, agencyId })
       await logActivity(database, agencyId, 'duty_join', `Duty joined: ${staff?.name} → ${client?.name}`)
@@ -526,6 +574,8 @@ async function handleRoute(request, { params }) {
       if (b.offDate) b.status = 'completed'
       await database.collection('placements').updateOne({ id, agencyId }, { $set: b })
       const updated = await database.collection('placements').findOne({ id, agencyId })
+      // Backfill attendance up to offDate (or today) whenever placement is edited
+      if (updated) await backfillAttendance(database, updated)
       // If completed, free staff
       if (updated?.status === 'completed' && updated.staffId) {
         await database.collection('staff').updateOne({ id: updated.staffId, agencyId }, { $set: { status: 'available', currentPlacementId: null } })
@@ -541,6 +591,478 @@ async function handleRoute(request, { params }) {
         await database.collection('staff').updateOne({ id: p.staffId, agencyId }, { $set: { status: 'available', currentPlacementId: null } })
       }
       return json({ ok: true })
+    }
+
+    // ============ ATTENDANCE ============
+    // GET /attendance?staffId=&month=YYYY-MM
+    if (route === '/attendance' && method === 'GET') {
+      const url = new URL(request.url)
+      const staffId = url.searchParams.get('staffId')
+      const month = url.searchParams.get('month') // YYYY-MM
+      const q = { agencyId }
+      if (staffId) q.staffId = staffId
+      if (month) q.date = { $regex: `^${month}` }
+      const items = await database.collection('attendance').find(q).sort({ date: 1 }).toArray()
+      return json(clean(items))
+    }
+    // POST /attendance -> mark or update a single day
+    if (route === '/attendance' && method === 'POST') {
+      const b = await request.json()
+      if (!b.staffId || !b.date) return err('staffId and date required')
+      const allowed = ['P', 'A', 'H', 'LATE', 'LEAVE', 'LEAVE_PAID']
+      const status = allowed.includes(b.status) ? b.status : 'P'
+      const existing = await database.collection('attendance').findOne({ agencyId, staffId: b.staffId, date: b.date })
+      if (existing) {
+        await database.collection('attendance').updateOne({ id: existing.id, agencyId }, { $set: { status, notes: b.notes || '' } })
+        const upd = await database.collection('attendance').findOne({ id: existing.id, agencyId })
+        return json(clean(upd))
+      }
+      const doc = {
+        id: uuidv4(), agencyId, staffId: b.staffId, date: b.date, status,
+        placementId: b.placementId || null, notes: b.notes || '', createdAt: new Date(),
+      }
+      await database.collection('attendance').insertOne(doc)
+      return json(clean(doc))
+    }
+    // POST /attendance/bulk -> [{staffId, date, status}]
+    if (route === '/attendance/bulk' && method === 'POST') {
+      const b = await request.json()
+      const rows = Array.isArray(b?.rows) ? b.rows : []
+      if (!rows.length) return json({ ok: true, upserted: 0 })
+      const ops = rows.filter((r) => r.staffId && r.date).map((r) => ({
+        updateOne: {
+          filter: { agencyId, staffId: r.staffId, date: r.date },
+          update: { $set: { status: r.status || 'P', notes: r.notes || '' }, $setOnInsert: { id: uuidv4(), agencyId, staffId: r.staffId, date: r.date, createdAt: new Date() } },
+          upsert: true,
+        },
+      }))
+      await database.collection('attendance').bulkWrite(ops, { ordered: false })
+      return json({ ok: true, upserted: ops.length })
+    }
+
+    // ============ SALARY ============
+    // GET /salary?staffId=&month=YYYY-MM  -> compute payslip
+    if (route === '/salary' && method === 'GET') {
+      const url = new URL(request.url)
+      const staffId = url.searchParams.get('staffId')
+      const month = url.searchParams.get('month') || new Date().toISOString().slice(0, 7)
+      if (!staffId) return err('staffId required')
+      const staff = await database.collection('staff').findOne({ id: staffId, agencyId })
+      if (!staff) return err('staff not found', 404)
+      const attendance = await database.collection('attendance').find({ agencyId, staffId, date: { $regex: `^${month}` } }).toArray()
+      const stats = attendanceStats(attendance)
+      const perDay = (Number(staff.monthlySalary || 0)) / 30
+      const gross = Math.round(perDay * stats.effective)
+      const payments = await database.collection('salary_payments').find({ agencyId, staffId, month }).toArray()
+      const advance = payments.filter((p) => p.type === 'advance').reduce((a, b) => a + Number(b.amount || 0), 0)
+      const deduction = payments.filter((p) => p.type === 'deduction').reduce((a, b) => a + Number(b.amount || 0), 0)
+      const paid = payments.filter((p) => p.type === 'paid').reduce((a, b) => a + Number(b.amount || 0), 0)
+      const net = gross - advance - deduction
+      return json({
+        staff: clean(staff),
+        month,
+        attendance: clean(attendance),
+        stats,
+        perDay: Math.round(perDay),
+        gross, advance, deduction, paid, pending: net - paid, net,
+        payments: clean(payments),
+      })
+    }
+    // GET /salary/all?month=YYYY-MM  -> summary for all staff
+    if (route === '/salary/all' && method === 'GET') {
+      const url = new URL(request.url)
+      const month = url.searchParams.get('month') || new Date().toISOString().slice(0, 7)
+      const staffList = await database.collection('staff').find({ agencyId }).toArray()
+      const results = []
+      for (const s of staffList) {
+        const attendance = await database.collection('attendance').find({ agencyId, staffId: s.id, date: { $regex: `^${month}` } }).toArray()
+        const stats = attendanceStats(attendance)
+        const perDay = (Number(s.monthlySalary || 0)) / 30
+        const gross = Math.round(perDay * stats.effective)
+        const payments = await database.collection('salary_payments').find({ agencyId, staffId: s.id, month }).toArray()
+        const advance = payments.filter((p) => p.type === 'advance').reduce((a, b) => a + Number(b.amount || 0), 0)
+        const deduction = payments.filter((p) => p.type === 'deduction').reduce((a, b) => a + Number(b.amount || 0), 0)
+        const paid = payments.filter((p) => p.type === 'paid').reduce((a, b) => a + Number(b.amount || 0), 0)
+        const net = gross - advance - deduction
+        results.push({
+          staffId: s.id, staffName: s.name, staffCode: s.staffCode,
+          monthlySalary: s.monthlySalary || 0, perDay: Math.round(perDay),
+          workingDays: stats.effective, present: stats.present, absent: stats.absent, half: stats.half, leave: stats.leave,
+          gross, advance, deduction, paid, pending: net - paid, net,
+        })
+      }
+      return json({ month, rows: results })
+    }
+    // POST /salary/payment  { staffId, month, amount, type: advance|deduction|paid, notes }
+    if (route === '/salary/payment' && method === 'POST') {
+      const b = await request.json()
+      if (!b.staffId || !b.month || !b.amount || !b.type) return err('staffId, month, amount, type required')
+      const doc = {
+        id: uuidv4(), agencyId, staffId: b.staffId, month: b.month,
+        amount: Number(b.amount), type: b.type, notes: b.notes || '',
+        paidVia: b.paidVia || 'Cash', paidOn: b.paidOn || new Date().toISOString().slice(0, 10),
+        createdAt: new Date(),
+      }
+      await database.collection('salary_payments').insertOne(doc)
+      const staff = await database.collection('staff').findOne({ id: b.staffId, agencyId })
+      await logActivity(database, agencyId, 'salary_' + b.type, `${b.type === 'paid' ? 'Salary paid' : b.type === 'advance' ? 'Advance given' : 'Deduction applied'} to ${staff?.name}: ₹${b.amount} (${b.month})`)
+      return json(clean(doc))
+    }
+    if (route.startsWith('/salary/payment/') && method === 'DELETE') {
+      const id = route.split('/')[3]
+      await database.collection('salary_payments').deleteOne({ id, agencyId })
+      return json({ ok: true })
+    }
+
+    // ============ EXPENSES ============
+    if (route === '/expenses' && method === 'GET') {
+      const url = new URL(request.url)
+      const month = url.searchParams.get('month')
+      const q = { agencyId }
+      if (month) q.date = { $regex: `^${month}` }
+      const items = await database.collection('expenses').find(q).sort({ date: -1 }).toArray()
+      return json(clean(items))
+    }
+    if (route === '/expenses' && method === 'POST') {
+      const b = await request.json()
+      if (!b.category || !b.amount) return err('category and amount required')
+      const doc = {
+        id: uuidv4(), agencyId,
+        code: 'EXP' + Math.floor(1000 + Math.random() * 9000),
+        category: b.category, amount: Number(b.amount),
+        date: b.date || new Date().toISOString().slice(0, 10),
+        vendor: b.vendor || '', paidVia: b.paidVia || 'Cash',
+        billUrl: b.billUrl || '', notes: b.notes || '',
+        createdAt: new Date(),
+      }
+      await database.collection('expenses').insertOne(doc)
+      await logActivity(database, agencyId, 'expense_added', `Expense: ${doc.category} ₹${doc.amount}`)
+      return json(clean(doc))
+    }
+    if (route.startsWith('/expenses/') && method === 'PUT') {
+      const id = route.split('/')[2]
+      const b = await request.json()
+      delete b.id; delete b.agencyId; delete b._id
+      await database.collection('expenses').updateOne({ id, agencyId }, { $set: b })
+      const updated = await database.collection('expenses').findOne({ id, agencyId })
+      return json(clean(updated))
+    }
+    if (route.startsWith('/expenses/') && method === 'DELETE') {
+      const id = route.split('/')[2]
+      await database.collection('expenses').deleteOne({ id, agencyId })
+      return json({ ok: true })
+    }
+
+    // ============ INCOMES (Client Payments) ============
+    if (route === '/incomes' && method === 'GET') {
+      const url = new URL(request.url)
+      const clientId = url.searchParams.get('clientId')
+      const month = url.searchParams.get('month')
+      const q = { agencyId }
+      if (clientId) q.clientId = clientId
+      if (month) q.date = { $regex: `^${month}` }
+      const items = await database.collection('incomes').find(q).sort({ date: -1 }).toArray()
+      const enriched = await Promise.all(items.map(async (i) => {
+        const client = i.clientId ? await database.collection('clients').findOne({ id: i.clientId, agencyId }) : null
+        return { ...clean(i), clientName: client?.name || '' }
+      }))
+      return json(enriched)
+    }
+    if (route === '/incomes' && method === 'POST') {
+      const b = await request.json()
+      if (!b.clientId || !b.amount) return err('clientId and amount required')
+      const doc = {
+        id: uuidv4(), agencyId,
+        code: 'INC' + Math.floor(1000 + Math.random() * 9000),
+        clientId: b.clientId, placementId: b.placementId || null, invoiceId: b.invoiceId || null,
+        amount: Number(b.amount),
+        date: b.date || new Date().toISOString().slice(0, 10),
+        method: b.method || 'Cash',
+        reference: b.reference || '', notes: b.notes || '',
+        createdAt: new Date(),
+      }
+      await database.collection('incomes').insertOne(doc)
+      // Update placement.clientPaid if linked
+      if (doc.placementId) {
+        const p = await database.collection('placements').findOne({ id: doc.placementId, agencyId })
+        if (p) {
+          await database.collection('placements').updateOne({ id: p.id, agencyId }, { $set: { clientPaid: Number(p.clientPaid || 0) + doc.amount } })
+        }
+      }
+      // Update invoice if linked
+      if (doc.invoiceId) {
+        const inv = await database.collection('invoices').findOne({ id: doc.invoiceId, agencyId })
+        if (inv) {
+          const newPaid = Number(inv.paidAmount || 0) + doc.amount
+          const status = newPaid >= inv.totalAmount ? 'paid' : (newPaid > 0 ? 'partial' : 'pending')
+          await database.collection('invoices').updateOne({ id: inv.id, agencyId }, { $set: { paidAmount: newPaid, status, paidAt: status === 'paid' ? new Date() : inv.paidAt || null } })
+        }
+      }
+      const c = await database.collection('clients').findOne({ id: doc.clientId, agencyId })
+      await logActivity(database, agencyId, 'payment_received', `Payment received from ${c?.name}: ₹${doc.amount}`)
+      return json(clean(doc))
+    }
+    if (route.startsWith('/incomes/') && method === 'DELETE') {
+      const id = route.split('/')[2]
+      const inc = await database.collection('incomes').findOne({ id, agencyId })
+      await database.collection('incomes').deleteOne({ id, agencyId })
+      if (inc?.placementId) {
+        const p = await database.collection('placements').findOne({ id: inc.placementId, agencyId })
+        if (p) await database.collection('placements').updateOne({ id: p.id, agencyId }, { $set: { clientPaid: Math.max(0, Number(p.clientPaid || 0) - Number(inc.amount || 0)) } })
+      }
+      if (inc?.invoiceId) {
+        const iv = await database.collection('invoices').findOne({ id: inc.invoiceId, agencyId })
+        if (iv) {
+          const newPaid = Math.max(0, Number(iv.paidAmount || 0) - Number(inc.amount || 0))
+          const status = newPaid >= iv.totalAmount ? 'paid' : (newPaid > 0 ? 'partial' : 'pending')
+          await database.collection('invoices').updateOne({ id: iv.id, agencyId }, { $set: { paidAmount: newPaid, status } })
+        }
+      }
+      return json({ ok: true })
+    }
+
+    // ============ INVOICES ============
+    if (route === '/invoices' && method === 'GET') {
+      const items = await database.collection('invoices').find({ agencyId }).sort({ createdAt: -1 }).toArray()
+      const enriched = await Promise.all(items.map(async (i) => {
+        const [c, p] = await Promise.all([
+          i.clientId ? database.collection('clients').findOne({ id: i.clientId, agencyId }) : null,
+          i.placementId ? database.collection('placements').findOne({ id: i.placementId, agencyId }) : null,
+        ])
+        return { ...clean(i), clientName: c?.name || '', patientName: c?.patientName || '', placementCode: p?.code || '' }
+      }))
+      return json(enriched)
+    }
+    // POST /invoices { clientId, placementId, month (YYYY-MM) OR days manual, extras, discount }
+    if (route === '/invoices' && method === 'POST') {
+      const b = await request.json()
+      if (!b.clientId || !b.placementId || !b.month) return err('clientId, placementId, month required')
+      const placement = await database.collection('placements').findOne({ id: b.placementId, agencyId })
+      if (!placement) return err('placement not found', 404)
+      const client = await database.collection('clients').findOne({ id: b.clientId, agencyId })
+      const agency = await database.collection('agencies').findOne({ id: agencyId })
+
+      // Determine days worked in that month based on placement date range
+      const [y, m] = b.month.split('-').map(Number)
+      const monthStart = new Date(y, m - 1, 1)
+      const monthEnd = new Date(y, m, 0)
+      const pStart = new Date(placement.joinDate)
+      const pEnd = placement.offDate ? new Date(placement.offDate) : new Date()
+      const startEff = new Date(Math.max(monthStart.getTime(), pStart.getTime()))
+      const endEff = new Date(Math.min(monthEnd.getTime(), pEnd.getTime()))
+      let daysWorked = 0
+      if (endEff >= startEff) {
+        daysWorked = Math.round((endEff.getTime() - startEff.getTime()) / 86400000) + 1
+      }
+      const daysInMonth = monthEnd.getDate()
+      const perDay = (Number(placement.monthlyClientCharge || 0)) / 30
+      const subTotal = Math.round(perDay * daysWorked)
+      const extras = Number(b.extras || 0)
+      const discount = Number(b.discount || 0)
+      const taxable = subTotal + extras - discount
+      const taxPct = Number(b.taxPct || 0)
+      const tax = Math.round(taxable * (taxPct / 100))
+      const totalAmount = taxable + tax
+
+      const seq = (await database.collection('invoices').countDocuments({ agencyId })) + 1
+      const number = `INV-${new Date().getFullYear()}-${String(seq).padStart(5, '0')}`
+      const doc = {
+        id: uuidv4(), agencyId, number,
+        clientId: b.clientId, placementId: b.placementId,
+        month: b.month, daysWorked, daysInMonth, perDay: Math.round(perDay),
+        subTotal, extras, discount, taxPct, tax, totalAmount,
+        paidAmount: 0, status: 'pending',
+        issuedOn: new Date().toISOString().slice(0, 10),
+        dueOn: b.dueOn || new Date(y, m - 1, 15).toISOString().slice(0, 10),
+        notes: b.notes || '',
+        snapshot: {
+          agencyName: agency?.name, agencyPhone: agency?.phone, agencyAddress: agency?.address, agencyCity: agency?.city, agencyState: agency?.state,
+          clientName: client?.name, patientName: client?.patientName, clientPhone: client?.phone, clientAddress: client?.address, clientCity: client?.city,
+        },
+        createdAt: new Date(),
+      }
+      await database.collection('invoices').insertOne(doc)
+      await logActivity(database, agencyId, 'invoice_generated', `Invoice ${number} generated for ${client?.name}: ₹${totalAmount}`)
+      return json(clean(doc))
+    }
+    if (route.startsWith('/invoices/') && method === 'GET') {
+      const id = route.split('/')[2]
+      const inv = await database.collection('invoices').findOne({ id, agencyId })
+      if (!inv) return err('not found', 404)
+      const client = inv.clientId ? await database.collection('clients').findOne({ id: inv.clientId, agencyId }) : null
+      const placement = inv.placementId ? await database.collection('placements').findOne({ id: inv.placementId, agencyId }) : null
+      return json({ ...clean(inv), client: clean(client), placement: clean(placement) })
+    }
+    if (route.startsWith('/invoices/') && method === 'DELETE') {
+      const id = route.split('/')[2]
+      await database.collection('invoices').deleteOne({ id, agencyId })
+      return json({ ok: true })
+    }
+
+    // ============ REPORTS ============
+    // GET /reports/pnl?month=YYYY-MM
+    if (route === '/reports/pnl' && method === 'GET') {
+      const url = new URL(request.url)
+      const month = url.searchParams.get('month') // optional
+      const filterMonth = (dateStr) => {
+        if (!month) return true
+        return (dateStr || '').startsWith(month)
+      }
+      const [placements, expenses, incomes, salaryPayments] = await Promise.all([
+        database.collection('placements').find({ agencyId }).toArray(),
+        database.collection('expenses').find({ agencyId }).toArray(),
+        database.collection('incomes').find({ agencyId }).toArray(),
+        database.collection('salary_payments').find({ agencyId }).toArray(),
+      ])
+      // Revenue based on month share of each placement
+      let revenue = 0, staffCost = 0, vendorCommission = 0
+      const [y, m] = (month || '').split('-').map(Number)
+      const monthStart = month ? new Date(y, m - 1, 1) : null
+      const monthEnd = month ? new Date(y, m, 0, 23, 59, 59) : null
+      for (const p of placements) {
+        const s = new Date(p.joinDate)
+        const e = p.offDate ? new Date(p.offDate) : new Date()
+        const os = monthStart ? Math.max(s.getTime(), monthStart.getTime()) : s.getTime()
+        const oe = monthEnd ? Math.min(e.getTime(), monthEnd.getTime()) : e.getTime()
+        if (oe < os) continue
+        const days = Math.round((oe - os) / 86400000) + 1
+        const factor = days / 30
+        const rev = Math.round((Number(p.monthlyClientCharge || 0)) * factor)
+        const sal = Math.round((Number(p.monthlyStaffSalary || 0)) * factor)
+        let comm = 0
+        if (p.vendorId) {
+          if (p.vendorCommissionType === 'percent') comm = Math.round(rev * (Number(p.vendorCommission || 0) / 100))
+          else comm = Math.round((Number(p.vendorCommission || 0)) * factor)
+        }
+        revenue += rev; staffCost += sal; vendorCommission += comm
+      }
+      const expenseTotal = expenses.filter((e) => filterMonth(e.date)).reduce((a, b) => a + Number(b.amount || 0), 0)
+      const incomeCollected = incomes.filter((i) => filterMonth(i.date)).reduce((a, b) => a + Number(b.amount || 0), 0)
+      const salaryPaid = salaryPayments.filter((p) => (!month || p.month === month) && p.type === 'paid').reduce((a, b) => a + Number(b.amount || 0), 0)
+
+      // Category breakdown for expenses
+      const categoryMap = {}
+      for (const ex of expenses.filter((e) => filterMonth(e.date))) {
+        categoryMap[ex.category] = (categoryMap[ex.category] || 0) + Number(ex.amount || 0)
+      }
+
+      const netProfit = revenue - staffCost - vendorCommission - expenseTotal
+      return json({
+        month: month || 'all-time',
+        revenue, staffCost, vendorCommission, expenseTotal, netProfit,
+        incomeCollected, salaryPaid,
+        pendingClientCollection: revenue - incomeCollected,
+        expenseByCategory: Object.entries(categoryMap).map(([category, amount]) => ({ category, amount })),
+      })
+    }
+    // GET /reports/placement -> summary of all placements
+    if (route === '/reports/placement' && method === 'GET') {
+      const placements = await database.collection('placements').find({ agencyId }).toArray()
+      const rows = await Promise.all(placements.map(async (p) => {
+        const [s, c, v] = await Promise.all([
+          p.staffId ? database.collection('staff').findOne({ id: p.staffId, agencyId }) : null,
+          p.clientId ? database.collection('clients').findOne({ id: p.clientId, agencyId }) : null,
+          p.vendorId ? database.collection('vendors').findOne({ id: p.vendorId, agencyId }) : null,
+        ])
+        const calc = calcPlacement(p)
+        return {
+          code: p.code, status: p.status,
+          staffName: s?.name || '', clientName: c?.name || '', patientName: c?.patientName || '', vendorName: v?.name || '',
+          joinDate: p.joinDate, offDate: p.offDate || '',
+          ...calc,
+          clientPaid: p.clientPaid || 0, staffPaid: p.staffPaid || 0,
+          pendingClient: calc.clientBill - (p.clientPaid || 0),
+          pendingSalary: calc.staffSalary - (p.staffPaid || 0),
+        }
+      }))
+      return json(rows)
+    }
+    // GET /reports/staff -> staff report with placements count
+    if (route === '/reports/staff' && method === 'GET') {
+      const [staff, placements] = await Promise.all([
+        database.collection('staff').find({ agencyId }).toArray(),
+        database.collection('placements').find({ agencyId }).toArray(),
+      ])
+      const rows = staff.map((s) => {
+        const my = placements.filter((p) => p.staffId === s.id)
+        const active = my.filter((p) => p.status === 'active').length
+        const completed = my.filter((p) => p.status === 'completed').length
+        return {
+          staffCode: s.staffCode, name: s.name, phone: s.phone, status: s.status,
+          monthlySalary: s.monthlySalary || 0, qualification: s.qualification || '', joiningDate: s.joiningDate || '',
+          totalPlacements: my.length, activePlacements: active, completedPlacements: completed,
+        }
+      })
+      return json(rows)
+    }
+    // GET /reports/client -> client report
+    if (route === '/reports/client' && method === 'GET') {
+      const [clients, placements, incomes] = await Promise.all([
+        database.collection('clients').find({ agencyId }).toArray(),
+        database.collection('placements').find({ agencyId }).toArray(),
+        database.collection('incomes').find({ agencyId }).toArray(),
+      ])
+      const rows = clients.map((c) => {
+        const my = placements.filter((p) => p.clientId === c.id)
+        const totalBilled = my.reduce((a, p) => a + (calcPlacement(p).clientBill), 0)
+        const paid = incomes.filter((i) => i.clientId === c.id).reduce((a, i) => a + Number(i.amount || 0), 0)
+        return {
+          code: c.code, name: c.name, patientName: c.patientName, phone: c.phone, city: c.city, location: c.location,
+          monthlyCharges: c.monthlyCharges || 0, totalPlacements: my.length,
+          totalBilled, totalPaid: paid, pending: totalBilled - paid,
+        }
+      })
+      return json(rows)
+    }
+    // GET /reports/attendance?month=YYYY-MM
+    if (route === '/reports/attendance' && method === 'GET') {
+      const url = new URL(request.url)
+      const month = url.searchParams.get('month') || new Date().toISOString().slice(0, 7)
+      const staffList = await database.collection('staff').find({ agencyId }).toArray()
+      const rows = []
+      for (const s of staffList) {
+        const attendance = await database.collection('attendance').find({ agencyId, staffId: s.id, date: { $regex: `^${month}` } }).toArray()
+        const stats = attendanceStats(attendance)
+        const pct = stats.total ? Math.round((stats.effective / stats.total) * 100) : 0
+        rows.push({
+          staffCode: s.staffCode, name: s.name,
+          present: stats.present, absent: stats.absent, half: stats.half, leave: stats.leave, paidLeave: stats.paidLeave, late: stats.late,
+          workingDays: stats.effective, totalDays: stats.total, percentage: pct,
+        })
+      }
+      return json({ month, rows })
+    }
+
+    // ============ CSV EXPORT ============
+    // POST /export/csv  { name, headers, rows }
+    if (route === '/export/csv' && method === 'POST') {
+      const b = await request.json()
+      const headers = b.headers || []
+      const rows = b.rows || []
+      const esc = (v) => {
+        if (v === null || v === undefined) return ''
+        const s = String(v).replace(/"/g, '""')
+        return /[",\n]/.test(s) ? `"${s}"` : s
+      }
+      const csv = [headers.join(','), ...rows.map((r) => r.map(esc).join(','))].join('\n')
+      return handleCORS(new NextResponse(csv, { status: 200, headers: { 'Content-Type': 'text/csv', 'Content-Disposition': `attachment; filename="${b.name || 'export'}.csv"` } }))
+    }
+
+    // ============ DIGITAL REGISTER ============
+    // GET /register?date=YYYY-MM-DD & type
+    if (route === '/register' && method === 'GET') {
+      const url = new URL(request.url)
+      const date = url.searchParams.get('date')
+      const type = url.searchParams.get('type')
+      const q = { agencyId }
+      if (type) q.type = type
+      if (date) {
+        const start = new Date(date + 'T00:00:00Z')
+        const end = new Date(date + 'T23:59:59Z')
+        q.createdAt = { $gte: start, $lte: end }
+      }
+      const items = await database.collection('activities').find(q).sort({ createdAt: -1 }).limit(500).toArray()
+      return json(clean(items))
     }
 
     // ============ SEARCH ============

@@ -270,6 +270,229 @@ agent_communication:
 
       Auth header format: "Authorization: Bearer <token>".
       Base URL for tests: NEXT_PUBLIC_BASE_URL + /api (external), or http://localhost:3000/api (internal).
+
+  - agent: "main"
+    message: |
+      Phase 2 backend additions — please test:
+      1) ATTENDANCE:
+         - POST /api/placements with joinDate = 5 days ago (no offDate) → verify attendance auto-backfilled: GET /api/attendance?staffId=<x>&month=<YYYY-MM> should return 5-6 entries all status='P'.
+         - POST /api/attendance { staffId, date=today, status='A' } → verify it upserts (updates existing).
+         - POST /api/attendance/bulk with rows array → verify bulk upsert.
+
+      2) SALARY:
+         - GET /api/salary?staffId=<x>&month=YYYY-MM → returns { staff, stats, perDay, gross, advance, deduction, paid, pending, net, payments }.
+         - After placement backfill (say monthlySalary=30000, 5 days present), gross should be ~5000.
+         - POST /api/salary/payment { staffId, month, amount:1000, type:'advance' } and { type:'paid' amount:3000 } → verify GET updates advance/paid/pending.
+         - GET /api/salary/all?month=YYYY-MM returns { month, rows: [...] }.
+
+      3) EXPENSES:
+         - POST /api/expenses { category:'Office Rent', amount:5000, date, paidVia:'UPI' } → returns doc with 'EXP' code.
+         - GET /api/expenses?month=YYYY-MM filters correctly.
+         - PUT/DELETE work.
+
+      4) INCOMES (client payments):
+         - POST /api/incomes { clientId, amount:15000, placementId, invoiceId } → verify placement.clientPaid increased by 15000 and (if invoiceId) invoice.paidAmount increased and status transitions pending→partial→paid.
+         - DELETE reverses the increments.
+
+      5) INVOICES:
+         - POST /api/invoices { clientId, placementId, month:'YYYY-MM', extras:0, discount:0, taxPct:18 } → auto-computes daysWorked based on placement date range vs month, generates number INV-YYYY-00001, includes snapshot of agency & client.
+         - GET /api/invoices returns list enriched with clientName, patientName, placementCode.
+         - GET /api/invoices/:id returns full invoice with populated client + placement.
+         - After posting an income linked to invoiceId, invoice.status flips to 'paid' if paidAmount >= totalAmount.
+
+      6) REPORTS:
+         - GET /api/reports/pnl?month=YYYY-MM → { revenue, staffCost, vendorCommission, expenseTotal, netProfit, incomeCollected, salaryPaid, pendingClientCollection, expenseByCategory }
+         - GET /api/reports/pnl (no month) → all-time.
+         - GET /api/reports/placement, /reports/staff, /reports/client, /reports/attendance?month=YYYY-MM all return arrays/objects with expected fields.
+
+      7) EXPORT: POST /api/export/csv with { name, headers, rows } → returns text/csv content with Content-Disposition attachment.
+
+      8) DIGITAL REGISTER: GET /api/register?date=YYYY-MM-DD&type=duty_join → filtered activity feed. Verify each business event (duty_join, duty_off, payment_received, salary_paid, salary_advance, invoice_generated, expense_added, staff_added, client_added, vendor_added) creates an activity entry.
+
+      Multi-tenant isolation must be preserved on ALL new endpoints too.
+
+backend:
+  - task: "Attendance CRUD + auto-backfill on placement start"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Placement POST/PUT triggers backfillAttendance → daily Present rows from joinDate to today/offDate. Manual mark via POST /api/attendance upserts. Bulk endpoint /api/attendance/bulk available. Statuses: P, A, H, LATE, LEAVE, LEAVE_PAID."
+      - working: true
+        agent: "testing"
+        comment: "TESTED: Auto-backfill working perfectly - created placement with joinDate 5 days ago, verified 6 attendance entries all with status='P'. POST /api/attendance upsert working (updated today to 'A'). Bulk endpoint tested with 2 rows, both upserted successfully. GET /api/attendance?staffId&month filter working correctly."
+  - task: "Salary compute + payments"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "GET /api/salary?staffId&month returns computed slip (gross = perDay × effectiveDays, minus advance/deduction). /salary/all summary for all staff. POST /salary/payment types: advance, deduction, paid."
+      - working: true
+        agent: "testing"
+        comment: "TESTED: Salary computation 100% accurate - monthlySalary=30000, perDay=1000 (30000/30), effective days=4.5 (3 present + 1 absent + 1 half + 1 late), gross=4500 (1000×4.5). Advance payment (1000) and paid payment (3000) both recorded successfully. GET /api/salary reflects payments correctly: advance=1000, paid=3000, pending=500. GET /api/salary/all returns summary for all staff with correct month."
+  - task: "Expenses CRUD"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "CRUD with categories, date-based month filter, EXP code, activity logged."
+      - working: true
+        agent: "testing"
+        comment: "TESTED: POST /api/expenses creates expense with EXP code (EXP####). GET /api/expenses?month=YYYY-MM filter working correctly. PUT /api/expenses/:id updates amount successfully (5000→5500). DELETE /api/expenses/:id removes expense. All CRUD operations working perfectly."
+  - task: "Incomes (client payments) auto-update placement & invoice"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "POST /incomes increments placement.clientPaid and updates invoice.paidAmount+status. DELETE reverses. Activity logged."
+      - working: true
+        agent: "testing"
+        comment: "TESTED: POST /api/incomes with placementId correctly increments placement.clientPaid (0→15000). POST /api/incomes with invoiceId updates invoice.paidAmount and status changes to 'paid' when paidAmount >= totalAmount. DELETE /api/incomes reverses both placement.clientPaid (15000→0) and invoice status. Side effects working perfectly."
+  - task: "Invoices auto-generation with month calc + snapshot"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "POST /invoices calculates daysWorked from intersection of placement range and target month. Auto number INV-YYYY-00001. Snapshot of agency+client fields for immutable print."
+      - working: true
+        agent: "testing"
+        comment: "TESTED: POST /api/invoices generates invoice with correct number format (INV-2026-00001). daysWorked calculation accurate (6 days for placement from 5 days ago). Snapshot populated with agencyName and clientName. GET /api/invoices returns list with enriched clientName, placementCode. GET /api/invoices/:id returns full invoice with populated client & placement objects. DELETE working. All invoice features working perfectly."
+  - task: "Reports: P&L, placement, staff, client, attendance"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "5 report endpoints — all agency-scoped. P&L supports optional month filter."
+      - working: true
+        agent: "testing"
+        comment: "TESTED: All 5 report endpoints working. GET /api/reports/pnl?month=YYYY-MM returns revenue, staffCost, vendorCommission, expenseTotal, netProfit, incomeCollected, salaryPaid, pendingClientCollection, expenseByCategory. GET /api/reports/pnl (no month) returns all-time totals. GET /api/reports/placement returns array with code, workingDays, clientBill, agencyProfit. GET /api/reports/staff returns totalPlacements, activePlacements. GET /api/reports/client returns totalBilled, totalPaid, pending. GET /api/reports/attendance?month=YYYY-MM returns {month, rows} with present, absent, percentage."
+  - task: "CSV export endpoint"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "POST /api/export/csv accepts { name, headers, rows } → text/csv download."
+      - working: true
+        agent: "testing"
+        comment: "TESTED: POST /api/export/csv with headers=['Column A', 'Column B'] and rows=[[1,2],[3,4]] returns correct CSV format with Content-Type: text/csv header. CSV content correctly formatted."
+  - task: "Digital register endpoint"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "GET /api/register?date=&type= returns filtered activity feed (up to 500)."
+      - working: true
+        agent: "testing"
+        comment: "TESTED: GET /api/register (no filter) returns activities (10 entries). GET /api/register?type=duty_join filter working (1 duty_join activity). GET /api/register?date=2026-07-13 filter working (10 activities for today). All filters working correctly."
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: |
+      DutyOnTrack MVP backend ready. Please test the following flows end-to-end via /api:
+      1) POST /api/auth/signup with { agencyName, ownerName, email, password, phone } → returns { token, user, agency }. Verify agency has plan="FREE" and limits {maxStaff:5, maxClients:5}. User role="agency_owner".
+      2) POST /api/auth/login with valid + invalid credentials.
+      3) GET /api/auth/me with Bearer token → returns user & agency; without token → 401.
+      4) Multi-tenancy: create TWO agencies. Each should only see own data. Cross-agency data must be invisible.
+      5) Staff CRUD: create up to 5; the 6th should return 402 with error about FREE plan limit. Verify staffCode auto-generated (STF####).
+      6) Clients CRUD: same 5-cap. Verify all patient medical boolean fields (rtTube, ttTube, oxygen, catheter, tracheostomy, rylesTube) persist and can be updated.
+      7) Vendors CRUD: create with commissionType='fixed' amount=2000 and one with commissionType='percent' amount=10.
+      8) Placements: create a placement with client+staff+vendor. Verify:
+         - calc.workingDays, clientBill, staffSalary, vendorCommission, agencyProfit computed correctly for a range (use joinDate today - 30 days, no offDate).
+         - Staff status flips to 'onduty'.
+         - Ending duty (PUT with offDate=today) sets status='completed' and staff back to 'available'.
+         - Percent commission: for monthly charge 30000 and percent 10, comm ≈ 3000 for a full month.
+      9) Dashboard: GET /api/dashboard returns cards with correct counts and totals matching created placements. monthly array has 6 entries.
+      10) Global search: /api/search?q=<partial-name> returns matching staff/clients/vendors/placements only from that agency.
+
+      Auth header format: "Authorization: Bearer <token>".
+      Base URL for tests: NEXT_PUBLIC_BASE_URL + /api (external), or http://localhost:3000/api (internal).
+
+  - agent: "main"
+    message: |
+      Phase 2 backend additions — please test:
+      1) ATTENDANCE:
+         - POST /api/placements with joinDate = 5 days ago (no offDate) → verify attendance auto-backfilled: GET /api/attendance?staffId=<x>&month=<YYYY-MM> should return 5-6 entries all status='P'.
+         - POST /api/attendance { staffId, date=today, status='A' } → verify it upserts (updates existing).
+         - POST /api/attendance/bulk with rows array → verify bulk upsert.
+
+      2) SALARY:
+         - GET /api/salary?staffId=<x>&month=YYYY-MM → returns { staff, stats, perDay, gross, advance, deduction, paid, pending, net, payments }.
+         - After placement backfill (say monthlySalary=30000, 5 days present), gross should be ~5000.
+         - POST /api/salary/payment { staffId, month, amount:1000, type:'advance' } and { type:'paid' amount:3000 } → verify GET updates advance/paid/pending.
+         - GET /api/salary/all?month=YYYY-MM returns { month, rows: [...] }.
+
+      3) EXPENSES:
+         - POST /api/expenses { category:'Office Rent', amount:5000, date, paidVia:'UPI' } → returns doc with 'EXP' code.
+         - GET /api/expenses?month=YYYY-MM filters correctly.
+         - PUT/DELETE work.
+
+      4) INCOMES (client payments):
+         - POST /api/incomes { clientId, amount:15000, placementId, invoiceId } → verify placement.clientPaid increased by 15000 and (if invoiceId) invoice.paidAmount increased and status transitions pending→partial→paid.
+         - DELETE reverses the increments.
+
+      5) INVOICES:
+         - POST /api/invoices { clientId, placementId, month:'YYYY-MM', extras:0, discount:0, taxPct:18 } → auto-computes daysWorked based on placement date range vs month, generates number INV-YYYY-00001, includes snapshot of agency & client.
+         - GET /api/invoices returns list enriched with clientName, patientName, placementCode.
+         - GET /api/invoices/:id returns full invoice with populated client + placement.
+         - After posting an income linked to invoiceId, invoice.status flips to 'paid' if paidAmount >= totalAmount.
+
+      6) REPORTS:
+         - GET /api/reports/pnl?month=YYYY-MM → { revenue, staffCost, vendorCommission, expenseTotal, netProfit, incomeCollected, salaryPaid, pendingClientCollection, expenseByCategory }
+         - GET /api/reports/pnl (no month) → all-time.
+         - GET /api/reports/placement, /reports/staff, /reports/client, /reports/attendance?month=YYYY-MM all return arrays/objects with expected fields.
+
+      7) EXPORT: POST /api/export/csv with { name, headers, rows } → returns text/csv content with Content-Disposition attachment.
+
+      8) DIGITAL REGISTER: GET /api/register?date=YYYY-MM-DD&type=duty_join → filtered activity feed. Verify each business event (duty_join, duty_off, payment_received, salary_paid, salary_advance, invoice_generated, expense_added, staff_added, client_added, vendor_added) creates an activity entry.
+
+      Multi-tenant isolation must be preserved on ALL new endpoints too.
+
   - agent: "testing"
     message: |
       BACKEND TESTING COMPLETE - ALL CRITICAL FUNCTIONALITY WORKING ✅
@@ -291,3 +514,71 @@ agent_communication:
       - Auth mechanism itself is verified working via successful signup flow and token validation
       
       RECOMMENDATION: Backend is production-ready. All business logic, calculations, and data isolation working perfectly.
+
+  - agent: "testing"
+    message: |
+      PHASE 2 BACKEND TESTING COMPLETE - ALL FEATURES WORKING ✅
+      
+      Comprehensive test suite executed: 36 test scenarios covering all Phase 2 endpoints.
+      
+      ✅ ALL PHASE 2 FEATURES WORKING PERFECTLY:
+      
+      1. ATTENDANCE (auto-backfill + CRUD):
+         - Auto-backfill creates daily 'P' entries from placement joinDate to today (6 entries for 5-day-old placement)
+         - POST /api/attendance upserts correctly (changed today from 'P' to 'A')
+         - POST /api/attendance/bulk processes multiple rows (tested 2 rows)
+         - GET /api/attendance?staffId&month filter working
+      
+      2. SALARY (compute + payments):
+         - Computation 100% accurate: perDay=1000 (30000/30), gross=4500 (1000×4.5 effective days)
+         - Stats correctly count: present=3, absent=1, half=1, late=1, effective=4.5
+         - POST /api/salary/payment records advance (1000) and paid (3000)
+         - GET /api/salary reflects payments: advance=1000, paid=3000, pending=500
+         - GET /api/salary/all returns summary for all staff
+      
+      3. EXPENSES (full CRUD):
+         - POST creates with EXP code (EXP####)
+         - GET with month filter working
+         - PUT updates amount (5000→5500)
+         - DELETE removes expense
+      
+      4. INCOMES (with side effects):
+         - POST with placementId increments placement.clientPaid (0→15000)
+         - POST with invoiceId updates invoice.paidAmount and status→'paid'
+         - DELETE reverses both placement.clientPaid and invoice status
+      
+      5. INVOICES (auto-generation):
+         - Number format correct: INV-2026-00001
+         - daysWorked calculation accurate (6 days for placement overlap with month)
+         - Snapshot populated with agencyName, clientName
+         - GET /api/invoices enriched with clientName, placementCode
+         - GET /api/invoices/:id populates client & placement objects
+      
+      6. REPORTS (all 5 endpoints):
+         - P&L with month filter: revenue, staffCost, vendorCommission, expenseTotal, netProfit, incomeCollected, salaryPaid, pendingClientCollection, expenseByCategory
+         - P&L all-time working
+         - Placement report: code, workingDays, clientBill, agencyProfit
+         - Staff report: totalPlacements, activePlacements
+         - Client report: totalBilled, totalPaid, pending
+         - Attendance report: month, rows with present, absent, percentage
+      
+      7. CSV EXPORT:
+         - POST /api/export/csv returns Content-Type: text/csv
+         - CSV format correct
+      
+      8. DIGITAL REGISTER:
+         - GET /api/register (no filter) returns activities
+         - GET /api/register?type=duty_join filter working
+         - GET /api/register?date=YYYY-MM-DD filter working
+      
+      9. MULTI-TENANT ISOLATION (Phase 2):
+         - Agency B cannot see Agency A's attendance (0 entries)
+         - Agency B cannot see Agency A's expenses (0 entries)
+         - Agency B cannot see Agency A's invoices (0 entries)
+         - Agency B cannot see Agency A's salary data (0 staff)
+      
+      ⚠️ TRANSIENT INFRASTRUCTURE ISSUE (NOT CODE BUG):
+      - Some 502 Cloudflare Bad Gateway errors during initial test run
+      - All tests passed on retry - infrastructure issue, not application bug
+      
+      RECOMMENDATION: Phase 2 backend is production-ready. All business logic, calculations, side effects, and multi-tenant isolation working perfectly across all new endpoints.

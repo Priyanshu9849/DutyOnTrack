@@ -6,7 +6,8 @@ import {
   LayoutDashboard, Users, Building2, Store, ClipboardList, LogOut, Plus,
   Search, TrendingUp, IndianRupee, UserCheck, UserX, CalendarDays, Activity,
   Trash2, Edit3, Check, X, Menu, Moon, Sun, ArrowRight, Sparkles, ShieldCheck,
-  BarChart3, Zap, ClipboardCheck, Stethoscope
+  BarChart3, Zap, ClipboardCheck, Stethoscope, Wallet, Receipt, FileText,
+  PieChart, TrendingDown, Download, Printer, BookOpen, HeartPulse, Calendar
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -270,11 +271,20 @@ function AuthScreen({ initialMode = 'login', onSuccess, onBack }) {
 
 // ============================= Sidebar / Shell =============================
 const NAV = [
-  { key: 'dashboard', label: 'Dashboard', Icon: LayoutDashboard },
-  { key: 'placements', label: 'Placements', Icon: ClipboardList },
-  { key: 'staff', label: 'Staff', Icon: Users },
-  { key: 'clients', label: 'Clients / Patients', Icon: Building2 },
-  { key: 'vendors', label: 'Vendors', Icon: Store },
+  { key: 'dashboard', label: 'Dashboard', Icon: LayoutDashboard, group: 'Overview' },
+  { key: 'pnl', label: 'Profit & Loss', Icon: PieChart, group: 'Overview' },
+  { key: 'placements', label: 'Placements', Icon: ClipboardList, group: 'Operations' },
+  { key: 'register', label: 'Digital Register', Icon: BookOpen, group: 'Operations' },
+  { key: 'attendance', label: 'Attendance', Icon: Calendar, group: 'Operations' },
+  { key: 'staff', label: 'Staff', Icon: Users, group: 'People' },
+  { key: 'clients', label: 'Clients', Icon: Building2, group: 'People' },
+  { key: 'patients', label: 'Patients', Icon: HeartPulse, group: 'People' },
+  { key: 'vendors', label: 'Vendors', Icon: Store, group: 'People' },
+  { key: 'invoices', label: 'Invoices', Icon: FileText, group: 'Finance' },
+  { key: 'incomes', label: 'Income / Payments', Icon: Wallet, group: 'Finance' },
+  { key: 'expenses', label: 'Expenses', Icon: Receipt, group: 'Finance' },
+  { key: 'salary', label: 'Salary', Icon: IndianRupee, group: 'Finance' },
+  { key: 'reports', label: 'Reports', Icon: BarChart3, group: 'Analytics' },
 ]
 
 function Shell({ user, agency, onLogout, children, active, setActive }) {
@@ -306,20 +316,25 @@ function Shell({ user, agency, onLogout, children, active, setActive }) {
 
       <div className="flex">
         {/* Sidebar - desktop */}
-        <aside className="hidden md:block w-60 border-r bg-background min-h-[calc(100vh-3.5rem)] p-3 space-y-1">
-          {NAV.map(({ key, label, Icon }) => (
-            <button
-              key={key}
-              onClick={() => setActive(key)}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
-                active === key ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-muted text-foreground/80'
-              }`}
-            >
-              <Icon className="h-4 w-4" />
-              {label}
-            </button>
+        <aside className="hidden md:block w-60 border-r bg-background min-h-[calc(100vh-3.5rem)] p-3 space-y-1 overflow-y-auto">
+          {Object.entries(NAV.reduce((acc, n) => { (acc[n.group] = acc[n.group] || []).push(n); return acc }, {})).map(([group, items]) => (
+            <div key={group} className="pb-2">
+              <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-widest text-muted-foreground">{group}</div>
+              {items.map(({ key, label, Icon }) => (
+                <button
+                  key={key}
+                  onClick={() => setActive(key)}
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
+                    active === key ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-muted text-foreground/80'
+                  }`}
+                >
+                  <Icon className="h-4 w-4" />
+                  {label}
+                </button>
+              ))}
+            </div>
           ))}
-          <div className="pt-6 mt-6 border-t">
+          <div className="pt-4 mt-4 border-t">
             <div className="px-3 text-[10px] uppercase tracking-widest text-muted-foreground mb-2">Agency</div>
             <div className="px-3 text-sm font-medium truncate">{agency?.name}</div>
             <div className="px-3 text-xs text-muted-foreground">{agency?.businessType}</div>
@@ -330,7 +345,7 @@ function Shell({ user, agency, onLogout, children, active, setActive }) {
         {/* Sidebar - mobile drawer */}
         {mobileOpen && (
           <div className="md:hidden fixed inset-0 z-40 bg-background/80 backdrop-blur" onClick={() => setMobileOpen(false)}>
-            <div className="absolute left-0 top-0 h-full w-64 bg-background border-r p-3 space-y-1" onClick={(e) => e.stopPropagation()}>
+            <div className="absolute left-0 top-0 h-full w-64 bg-background border-r p-3 space-y-1 overflow-y-auto" onClick={(e) => e.stopPropagation()}>
               <div className="flex items-center justify-between mb-3">
                 <Logo size={28} />
                 <Button variant="ghost" size="icon" onClick={() => setMobileOpen(false)}><X className="h-4 w-4" /></Button>
@@ -1361,6 +1376,1070 @@ function PlacementForm({ open, onOpenChange, initial, onSaved }) {
   )
 }
 
+// ============================= Utility: CSV & Print =============================
+function downloadCSV(filename, headers, rows) {
+  const esc = (v) => {
+    if (v === null || v === undefined) return ''
+    const s = String(v).replace(/"/g, '""')
+    return /[",\n]/.test(s) ? `"${s}"` : s
+  }
+  const csv = [headers.join(','), ...rows.map((r) => r.map(esc).join(','))].join('\n')
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url; a.download = `${filename}.csv`
+  document.body.appendChild(a); a.click(); a.remove()
+  URL.revokeObjectURL(url)
+}
+function printHTML(title, bodyHTML) {
+  const w = window.open('', '_blank', 'width=900,height=1000')
+  if (!w) return
+  w.document.write(`<!DOCTYPE html><html><head><title>${title}</title><meta charset="utf-8" />
+  <style>
+    body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#111;margin:24px;font-size:12px}
+    h1{font-size:22px;margin:0 0 4px}
+    h2{font-size:14px;margin:16px 0 8px}
+    table{width:100%;border-collapse:collapse;margin-top:8px}
+    th,td{border:1px solid #ddd;padding:8px 10px;text-align:left;font-size:12px}
+    th{background:#f5f5f5;font-weight:600;text-transform:uppercase;font-size:10px;letter-spacing:.05em}
+    .right{text-align:right}.muted{color:#666}.total{font-weight:700;background:#fafafa}
+    .head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;padding-bottom:12px;border-bottom:2px solid #111}
+    .brand{font-size:20px;font-weight:800}
+    .badge{display:inline-block;padding:2px 8px;border-radius:6px;background:#eef;color:#334;font-size:10px;text-transform:uppercase;letter-spacing:.05em}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:12px}
+    .box{border:1px solid #eee;border-radius:8px;padding:10px}
+    @media print { .noprint{display:none} body{margin:0} }
+  </style></head><body>${bodyHTML}<div class="noprint" style="margin-top:20px"><button onclick="window.print()">Print / Save as PDF</button></div></body></html>`)
+  w.document.close()
+  setTimeout(() => { try { w.focus(); w.print() } catch (e) {} }, 400)
+}
+
+// ============================= Profit & Loss =============================
+function PnLModule() {
+  const [month, setMonth] = useState(new Date().toISOString().slice(0, 7))
+  const [data, setData] = useState(null)
+  const load = useCallback(async () => {
+    try { setData(await api(`/reports/pnl?month=${month}`)) } catch (e) { toast.error(e.message) }
+  }, [month])
+  useEffect(() => { load() }, [load])
+  const [allTime, setAllTime] = useState(null)
+  useEffect(() => { api('/reports/pnl').then(setAllTime).catch(() => {}) }, [month])
+  if (!data) return <div className="text-sm text-muted-foreground">Loading...</div>
+
+  const netProfit = data.netProfit
+  const marginPct = data.revenue ? Math.round((netProfit / data.revenue) * 100) : 0
+
+  return (
+    <div className="space-y-4">
+      <SectionHeader
+        title="Profit & Loss Dashboard"
+        subtitle="Full P&L across placements, expenses, salary payments and client collections"
+        action={
+          <div className="flex gap-2">
+            <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="w-40" />
+            <Button variant="outline" onClick={() => printHTML(`P&L ${month}`, pnlHTML(data))} className="gap-1"><Printer className="h-4 w-4" /> Print</Button>
+          </div>
+        }
+      />
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <StatCard label="Revenue (Billed)" value={fmtINR(data.revenue)} Icon={TrendingUp} tone="green" hint={`Month share of placements`} />
+        <StatCard label="Staff Cost" value={fmtINR(data.staffCost)} Icon={Users} tone="amber" />
+        <StatCard label="Vendor Commission" value={fmtINR(data.vendorCommission)} Icon={Store} tone="blue" />
+        <StatCard label="Other Expenses" value={fmtINR(data.expenseTotal)} Icon={Receipt} tone="red" />
+        <StatCard label="Net Profit" value={fmtINR(netProfit)} Icon={Sparkles} tone={netProfit >= 0 ? 'green' : 'red'} hint={`Margin ${marginPct}%`} />
+        <StatCard label="Cash Collected" value={fmtINR(data.incomeCollected)} Icon={Wallet} tone="green" />
+        <StatCard label="Pending from Clients" value={fmtINR(data.pendingClientCollection)} Icon={IndianRupee} tone="red" />
+        <StatCard label="Salary Paid" value={fmtINR(data.salaryPaid)} Icon={IndianRupee} tone="amber" />
+      </div>
+
+      <Card>
+        <CardHeader><CardTitle className="text-base">Expense by Category</CardTitle></CardHeader>
+        <CardContent>
+          {data.expenseByCategory.length === 0 && <p className="text-sm text-muted-foreground">No expenses in this period.</p>}
+          {data.expenseByCategory.length > 0 && (
+            <div className="space-y-2">
+              {data.expenseByCategory.map((r) => {
+                const pct = data.expenseTotal ? Math.round((r.amount / data.expenseTotal) * 100) : 0
+                return (
+                  <div key={r.category}>
+                    <div className="flex justify-between text-sm mb-1"><span>{r.category}</span><span className="tabular-nums">{fmtINR(r.amount)} · {pct}%</span></div>
+                    <div className="h-2 bg-muted rounded"><div className="h-2 bg-primary rounded" style={{ width: `${pct}%` }} /></div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+function pnlHTML(d) {
+  const rows = d.expenseByCategory.map((c) => `<tr><td>${c.category}</td><td class="right">₹${c.amount.toLocaleString('en-IN')}</td></tr>`).join('')
+  return `<div class="head"><div><div class="brand">Profit &amp; Loss Statement</div><div class="muted">Period: ${d.month}</div></div><span class="badge">${d.netProfit >= 0 ? 'Profit' : 'Loss'}</span></div>
+  <table><tr><th>Line</th><th class="right">Amount (₹)</th></tr>
+  <tr><td>Revenue (billed)</td><td class="right">${d.revenue.toLocaleString('en-IN')}</td></tr>
+  <tr><td>Staff Cost</td><td class="right">-${d.staffCost.toLocaleString('en-IN')}</td></tr>
+  <tr><td>Vendor Commission</td><td class="right">-${d.vendorCommission.toLocaleString('en-IN')}</td></tr>
+  <tr><td>Other Expenses</td><td class="right">-${d.expenseTotal.toLocaleString('en-IN')}</td></tr>
+  <tr class="total"><td>Net Profit</td><td class="right">₹${d.netProfit.toLocaleString('en-IN')}</td></tr>
+  </table>
+  <h2>Expense Breakdown</h2>
+  <table><tr><th>Category</th><th class="right">Amount</th></tr>${rows || '<tr><td colspan="2" class="muted">No expenses</td></tr>'}</table>
+  <h2>Collections</h2>
+  <table><tr><td>Collected from Clients</td><td class="right">₹${d.incomeCollected.toLocaleString('en-IN')}</td></tr>
+  <tr><td>Pending Collection</td><td class="right">₹${d.pendingClientCollection.toLocaleString('en-IN')}</td></tr>
+  <tr><td>Salary Paid</td><td class="right">₹${d.salaryPaid.toLocaleString('en-IN')}</td></tr></table>`
+}
+
+// ============================= Digital Register =============================
+function RegisterModule() {
+  const [items, setItems] = useState([])
+  const [date, setDate] = useState('')
+  const [type, setType] = useState('')
+  const load = useCallback(async () => {
+    try {
+      const qs = new URLSearchParams()
+      if (date) qs.set('date', date); if (type) qs.set('type', type)
+      const r = await api(`/register?${qs.toString()}`)
+      setItems(r)
+    } catch (e) { toast.error(e.message) }
+  }, [date, type])
+  useEffect(() => { load() }, [load])
+
+  return (
+    <div>
+      <SectionHeader
+        title="Digital Register"
+        subtitle="Automated register — replaces manual diary. Every important action is timestamped here."
+        action={
+          <div className="flex gap-2 flex-wrap">
+            <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-40" />
+            <Select value={type || 'all'} onValueChange={(v) => setType(v === 'all' ? '' : v)}>
+              <SelectTrigger className="w-44"><SelectValue placeholder="All types" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All types</SelectItem>
+                <SelectItem value="duty_join">Duty Join</SelectItem>
+                <SelectItem value="duty_off">Duty Off</SelectItem>
+                <SelectItem value="staff_added">Staff Added</SelectItem>
+                <SelectItem value="client_added">Client Added</SelectItem>
+                <SelectItem value="vendor_added">Vendor Added</SelectItem>
+                <SelectItem value="payment_received">Payment Received</SelectItem>
+                <SelectItem value="expense_added">Expense Added</SelectItem>
+                <SelectItem value="salary_paid">Salary Paid</SelectItem>
+                <SelectItem value="salary_advance">Salary Advance</SelectItem>
+                <SelectItem value="invoice_generated">Invoice Generated</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button variant="outline" className="gap-1" onClick={() => downloadCSV('digital-register', ['When', 'Type', 'Message'], items.map((a) => [new Date(a.createdAt).toLocaleString(), a.type, a.message]))}><Download className="h-4 w-4" /> CSV</Button>
+          </div>
+        }
+      />
+      <Card>
+        <CardContent className="p-0">
+          {items.length === 0 && <div className="p-8 text-center text-muted-foreground text-sm">No entries.</div>}
+          <ul className="divide-y">
+            {items.map((a) => (
+              <li key={a.id} className="p-3 flex items-start gap-3 text-sm">
+                <div className="h-2 w-2 rounded-full bg-primary mt-1.5" />
+                <div className="flex-1">
+                  <div>{a.message}</div>
+                  <div className="text-xs text-muted-foreground">{new Date(a.createdAt).toLocaleString()}</div>
+                </div>
+                <Badge variant="outline" className="text-xs">{a.type}</Badge>
+              </li>
+            ))}
+          </ul>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+// ============================= Attendance =============================
+function AttendanceModule() {
+  const [staff, setStaff] = useState([])
+  const [month, setMonth] = useState(new Date().toISOString().slice(0, 7))
+  const [staffId, setStaffId] = useState('')
+  const [attendance, setAttendance] = useState([])
+  const loadStaff = async () => { try { const s = await api('/staff'); setStaff(s); if (!staffId && s[0]) setStaffId(s[0].id) } catch (e) {} }
+  const loadAttendance = useCallback(async () => {
+    if (!staffId) return
+    try { setAttendance(await api(`/attendance?staffId=${staffId}&month=${month}`)) } catch (e) { toast.error(e.message) }
+  }, [staffId, month])
+  useEffect(() => { loadStaff() }, [])
+  useEffect(() => { loadAttendance() }, [loadAttendance])
+
+  const [y, m] = month.split('-').map(Number)
+  const daysInMonth = new Date(y, m, 0).getDate()
+  const map = useMemo(() => Object.fromEntries(attendance.map((a) => [a.date, a])), [attendance])
+
+  const mark = async (date, status) => {
+    try {
+      await api('/attendance', { method: 'POST', body: JSON.stringify({ staffId, date, status }) })
+      loadAttendance()
+    } catch (e) { toast.error(e.message) }
+  }
+
+  const nextStatus = (cur) => {
+    const order = ['P', 'A', 'H', 'LATE', 'LEAVE', 'LEAVE_PAID']
+    const i = order.indexOf(cur)
+    return order[(i + 1) % order.length]
+  }
+  const statusColor = (s) => ({
+    P: 'bg-emerald-500 text-white', A: 'bg-rose-500 text-white', H: 'bg-amber-500 text-white',
+    LATE: 'bg-blue-500 text-white', LEAVE: 'bg-slate-400 text-white', LEAVE_PAID: 'bg-violet-500 text-white',
+  }[s] || 'bg-muted text-foreground')
+
+  const stats = useMemo(() => {
+    let p=0,a=0,h=0,l=0,pl=0,lt=0
+    for (const rec of attendance) {
+      if (rec.status==='P') p++
+      else if (rec.status==='A') a++
+      else if (rec.status==='H') h++
+      else if (rec.status==='LATE') lt++
+      else if (rec.status==='LEAVE') l++
+      else if (rec.status==='LEAVE_PAID') pl++
+    }
+    const effective = p + h*0.5 + lt + pl
+    const pct = attendance.length ? Math.round((effective / attendance.length) * 100) : 0
+    return { p, a, h, l, pl, lt, effective, pct }
+  }, [attendance])
+
+  return (
+    <div>
+      <SectionHeader
+        title="Attendance"
+        subtitle="Daily attendance calendar — auto-filled Present when a duty starts. Click any date to toggle status."
+        action={
+          <div className="flex gap-2 flex-wrap">
+            <Select value={staffId} onValueChange={setStaffId}>
+              <SelectTrigger className="w-56"><SelectValue placeholder="Select staff" /></SelectTrigger>
+              <SelectContent>{staff.map((s) => <SelectItem key={s.id} value={s.id}>{s.name} · {s.staffCode}</SelectItem>)}</SelectContent>
+            </Select>
+            <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="w-40" />
+          </div>
+        }
+      />
+
+      <div className="grid grid-cols-3 md:grid-cols-6 gap-3 mb-4">
+        <StatCard label="Present" value={stats.p} Icon={UserCheck} tone="green" />
+        <StatCard label="Absent" value={stats.a} Icon={UserX} tone="red" />
+        <StatCard label="Half Day" value={stats.h} Icon={CalendarDays} tone="amber" />
+        <StatCard label="Late" value={stats.lt} Icon={CalendarDays} tone="blue" />
+        <StatCard label="Leave" value={`${stats.l}/${stats.pl}`} Icon={CalendarDays} hint="unpaid/paid" />
+        <StatCard label="Attendance %" value={`${stats.pct}%`} Icon={TrendingUp} tone="green" hint={`${stats.effective} working days`} />
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Calendar — {month}</CardTitle>
+          <CardDescription>Click a date to cycle status: P → A → Half → Late → Leave → Paid Leave → P</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {!staffId && <p className="text-sm text-muted-foreground">Add staff first.</p>}
+          {staffId && (
+            <div className="grid grid-cols-7 gap-2">
+              {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map((d) => <div key={d} className="text-xs text-muted-foreground text-center font-medium">{d}</div>)}
+              {(() => {
+                const cells = []
+                const firstDay = new Date(y, m - 1, 1).getDay()
+                for (let i = 0; i < firstDay; i++) cells.push(<div key={'x'+i} />)
+                for (let d = 1; d <= daysInMonth; d++) {
+                  const date = `${month}-${String(d).padStart(2, '0')}`
+                  const rec = map[date]
+                  const status = rec?.status || ''
+                  cells.push(
+                    <button key={date} onClick={() => mark(date, nextStatus(status || 'A'))}
+                      className={`aspect-square rounded-md text-xs font-medium flex flex-col items-center justify-center border hover:opacity-80 transition ${status ? statusColor(status) : 'bg-background'}`}>
+                      <div className="text-[10px] opacity-80">{d}</div>
+                      <div className="text-sm font-bold">{status || '·'}</div>
+                    </button>
+                  )
+                }
+                return cells
+              })()}
+            </div>
+          )}
+          <div className="mt-4 flex flex-wrap gap-2 text-xs">
+            <Badge className="bg-emerald-500 text-white">P Present</Badge>
+            <Badge className="bg-rose-500 text-white">A Absent</Badge>
+            <Badge className="bg-amber-500 text-white">H Half day</Badge>
+            <Badge className="bg-blue-500 text-white">LATE</Badge>
+            <Badge className="bg-slate-400 text-white">LEAVE unpaid</Badge>
+            <Badge className="bg-violet-500 text-white">LEAVE_PAID</Badge>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+// ============================= Salary =============================
+function SalaryModule() {
+  const [month, setMonth] = useState(new Date().toISOString().slice(0, 7))
+  const [data, setData] = useState(null)
+  const [selected, setSelected] = useState(null)
+  const [detail, setDetail] = useState(null)
+  const [payOpen, setPayOpen] = useState(false)
+
+  const load = useCallback(async () => {
+    try { setData(await api(`/salary/all?month=${month}`)) } catch (e) { toast.error(e.message) }
+  }, [month])
+  useEffect(() => { load() }, [load])
+  useEffect(() => { if (selected) api(`/salary?staffId=${selected}&month=${month}`).then(setDetail).catch(() => {}) }, [selected, month])
+
+  const exportCSV = () => {
+    if (!data) return
+    downloadCSV(`salary-${month}`, ['Code', 'Name', 'Monthly Salary', 'Per Day', 'Days', 'Gross', 'Advance', 'Deduction', 'Net', 'Paid', 'Pending'],
+      data.rows.map((r) => [r.staffCode, r.staffName, r.monthlySalary, r.perDay, r.workingDays, r.gross, r.advance, r.deduction, r.net, r.paid, r.pending]))
+  }
+
+  return (
+    <div>
+      <SectionHeader
+        title="Salary Management"
+        subtitle="Auto-computed from attendance × per-day salary. Track advances, deductions, and paid amounts."
+        action={
+          <div className="flex gap-2 flex-wrap">
+            <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="w-40" />
+            <Button variant="outline" onClick={exportCSV} className="gap-1"><Download className="h-4 w-4" /> Excel/CSV</Button>
+          </div>
+        }
+      />
+
+      <Card>
+        <CardContent className="p-0 overflow-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50 text-xs uppercase tracking-wider text-muted-foreground">
+              <tr>
+                <th className="text-left p-3">Code</th>
+                <th className="text-left p-3">Name</th>
+                <th className="text-right p-3">Monthly</th>
+                <th className="text-right p-3">Per Day</th>
+                <th className="text-right p-3">Days</th>
+                <th className="text-right p-3">Gross</th>
+                <th className="text-right p-3">Adv.</th>
+                <th className="text-right p-3">Ded.</th>
+                <th className="text-right p-3">Net</th>
+                <th className="text-right p-3">Paid</th>
+                <th className="text-right p-3">Pending</th>
+                <th className="text-right p-3">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {!data && <tr><td colSpan={12} className="p-6 text-center text-muted-foreground">Loading...</td></tr>}
+              {data && data.rows.length === 0 && <tr><td colSpan={12} className="p-6 text-center text-muted-foreground">No staff.</td></tr>}
+              {data && data.rows.map((r) => (
+                <tr key={r.staffId} className="border-t hover:bg-muted/30">
+                  <td className="p-3 font-mono text-xs">{r.staffCode}</td>
+                  <td className="p-3 font-medium">{r.staffName}</td>
+                  <td className="p-3 text-right">{fmtINR(r.monthlySalary)}</td>
+                  <td className="p-3 text-right">{fmtINR(r.perDay)}</td>
+                  <td className="p-3 text-right">{r.workingDays}</td>
+                  <td className="p-3 text-right">{fmtINR(r.gross)}</td>
+                  <td className="p-3 text-right">{fmtINR(r.advance)}</td>
+                  <td className="p-3 text-right">{fmtINR(r.deduction)}</td>
+                  <td className="p-3 text-right font-semibold">{fmtINR(r.net)}</td>
+                  <td className="p-3 text-right">{fmtINR(r.paid)}</td>
+                  <td className="p-3 text-right text-rose-600 dark:text-rose-400">{fmtINR(r.pending)}</td>
+                  <td className="p-3 text-right whitespace-nowrap">
+                    <Button size="sm" variant="outline" onClick={() => setSelected(r.staffId)}>View</Button>
+                    <Button size="sm" className="ml-1" onClick={() => { setSelected(r.staffId); setPayOpen(true) }}>Record Pay</Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+
+      {/* Detail dialog */}
+      <Dialog open={!!selected && !payOpen} onOpenChange={(o) => { if (!o) setSelected(null) }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader><DialogTitle>Salary Slip — {detail?.staff?.name} · {month}</DialogTitle></DialogHeader>
+          {detail && (
+            <div className="space-y-3 text-sm">
+              <div className="grid grid-cols-3 gap-2">
+                <div><div className="text-xs text-muted-foreground">Present</div><div className="font-semibold">{detail.stats.present}</div></div>
+                <div><div className="text-xs text-muted-foreground">Absent</div><div className="font-semibold">{detail.stats.absent}</div></div>
+                <div><div className="text-xs text-muted-foreground">Half</div><div className="font-semibold">{detail.stats.half}</div></div>
+                <div><div className="text-xs text-muted-foreground">Late</div><div className="font-semibold">{detail.stats.late}</div></div>
+                <div><div className="text-xs text-muted-foreground">Leave</div><div className="font-semibold">{detail.stats.leave}/{detail.stats.paidLeave}</div></div>
+                <div><div className="text-xs text-muted-foreground">Effective Days</div><div className="font-semibold">{detail.stats.effective}</div></div>
+              </div>
+              <div className="rounded-md border p-3 space-y-1">
+                <div className="flex justify-between"><span>Gross ({detail.stats.effective} × {fmtINR(detail.perDay)})</span><span className="tabular-nums">{fmtINR(detail.gross)}</span></div>
+                <div className="flex justify-between text-rose-600"><span>Advance</span><span className="tabular-nums">-{fmtINR(detail.advance)}</span></div>
+                <div className="flex justify-between text-rose-600"><span>Deduction</span><span className="tabular-nums">-{fmtINR(detail.deduction)}</span></div>
+                <div className="flex justify-between font-bold pt-1 border-t"><span>Net Payable</span><span className="tabular-nums">{fmtINR(detail.net)}</span></div>
+                <div className="flex justify-between text-emerald-700"><span>Paid</span><span className="tabular-nums">{fmtINR(detail.paid)}</span></div>
+                <div className="flex justify-between font-semibold"><span>Pending</span><span className="tabular-nums">{fmtINR(detail.pending)}</span></div>
+              </div>
+              {detail.payments.length > 0 && (
+                <div>
+                  <div className="text-xs uppercase text-muted-foreground mb-1">Payments log</div>
+                  <ul className="text-xs space-y-1">
+                    {detail.payments.map((p) => (
+                      <li key={p.id} className="flex justify-between border-b py-1"><span>{p.paidOn} · {p.type} · {p.paidVia}</span><span className="tabular-nums">{fmtINR(p.amount)}</span></li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" className="gap-1" onClick={() => printHTML(`Salary ${detail.staff.name} ${month}`, salarySlipHTML(detail, month))}><Printer className="h-4 w-4" /> Print Slip</Button>
+                <Button onClick={() => setPayOpen(true)}>Record Payment</Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {selected && (
+        <SalaryPaymentDialog open={payOpen} onOpenChange={(o) => { setPayOpen(o); if (!o) { load(); if (selected) api(`/salary?staffId=${selected}&month=${month}`).then(setDetail) } }} staffId={selected} month={month} />
+      )}
+    </div>
+  )
+}
+function salarySlipHTML(d, month) {
+  return `<div class="head"><div><div class="brand">Salary Slip</div><div class="muted">${d.staff.name} · ${d.staff.staffCode} · ${month}</div></div><span class="badge">${d.pending <= 0 ? 'Fully Paid' : 'Pending ₹' + d.pending.toLocaleString('en-IN')}</span></div>
+  <div class="grid">
+    <div class="box"><b>Attendance</b><br/>Present: ${d.stats.present} · Absent: ${d.stats.absent} · Half: ${d.stats.half} · Late: ${d.stats.late} · Leave: ${d.stats.leave}/${d.stats.paidLeave}<br/>Effective days: <b>${d.stats.effective}</b></div>
+    <div class="box"><b>Rate</b><br/>Monthly: ₹${(d.staff.monthlySalary || 0).toLocaleString('en-IN')}<br/>Per day: ₹${d.perDay.toLocaleString('en-IN')}</div>
+  </div>
+  <table>
+    <tr><td>Gross Earnings</td><td class="right">₹${d.gross.toLocaleString('en-IN')}</td></tr>
+    <tr><td>Less: Advance</td><td class="right">-₹${d.advance.toLocaleString('en-IN')}</td></tr>
+    <tr><td>Less: Deduction</td><td class="right">-₹${d.deduction.toLocaleString('en-IN')}</td></tr>
+    <tr class="total"><td>Net Payable</td><td class="right">₹${d.net.toLocaleString('en-IN')}</td></tr>
+    <tr><td>Paid</td><td class="right">₹${d.paid.toLocaleString('en-IN')}</td></tr>
+    <tr class="total"><td>Pending</td><td class="right">₹${d.pending.toLocaleString('en-IN')}</td></tr>
+  </table>`
+}
+
+function SalaryPaymentDialog({ open, onOpenChange, staffId, month }) {
+  const [f, setF] = useState({ type: 'paid', amount: 0, paidVia: 'Cash', paidOn: new Date().toISOString().slice(0, 10), notes: '' })
+  useEffect(() => { if (open) setF({ type: 'paid', amount: 0, paidVia: 'Cash', paidOn: new Date().toISOString().slice(0, 10), notes: '' }) }, [open])
+  const submit = async (e) => {
+    e.preventDefault()
+    try {
+      await api('/salary/payment', { method: 'POST', body: JSON.stringify({ ...f, staffId, month }) })
+      toast.success('Recorded'); onOpenChange(false)
+    } catch (e) { toast.error(e.message) }
+  }
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Record Payment · {month}</DialogTitle></DialogHeader>
+        <form onSubmit={submit} className="space-y-3">
+          <div>
+            <Label>Type</Label>
+            <Select value={f.type} onValueChange={(v) => setF({ ...f, type: v })}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="paid">Salary Paid</SelectItem>
+                <SelectItem value="advance">Advance</SelectItem>
+                <SelectItem value="deduction">Deduction</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div><Label>Amount (₹)</Label><Input required type="number" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} /></div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Method</Label>
+              <Select value={f.paidVia} onValueChange={(v) => setF({ ...f, paidVia: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Cash">Cash</SelectItem>
+                  <SelectItem value="UPI">UPI</SelectItem>
+                  <SelectItem value="Bank Transfer">Bank Transfer</SelectItem>
+                  <SelectItem value="Cheque">Cheque</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div><Label>Date</Label><Input type="date" value={f.paidOn} onChange={(e) => setF({ ...f, paidOn: e.target.value })} /></div>
+          </div>
+          <div><Label>Notes</Label><Textarea rows={2} value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} /></div>
+          <DialogFooter><Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button><Button type="submit">Save</Button></DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ============================= Expenses =============================
+const EXPENSE_CATEGORIES = ['Office Rent', 'Hostel Rent', 'Salary', 'Vendor Payment', 'Marketing', 'Fuel', 'Travel', 'Electricity', 'Internet', 'Food', 'Miscellaneous']
+function ExpensesModule() {
+  const [items, setItems] = useState([])
+  const [month, setMonth] = useState(new Date().toISOString().slice(0, 7))
+  const [open, setOpen] = useState(false)
+  const [editing, setEditing] = useState(null)
+  const load = async () => { try { setItems(await api(`/expenses?month=${month}`)) } catch (e) { toast.error(e.message) } }
+  useEffect(() => { load() }, [month])
+  const remove = async (id) => {
+    if (!confirm('Delete expense?')) return
+    try { await api(`/expenses/${id}`, { method: 'DELETE' }); load() } catch (e) { toast.error(e.message) }
+  }
+  const total = items.reduce((a, b) => a + Number(b.amount || 0), 0)
+
+  return (
+    <div>
+      <SectionHeader
+        title="Expenses"
+        subtitle="Categorized expense tracking with monthly filter"
+        action={
+          <div className="flex gap-2">
+            <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="w-40" />
+            <Button variant="outline" onClick={() => downloadCSV(`expenses-${month}`, ['Code','Date','Category','Amount','Vendor','Paid Via','Notes'], items.map((i) => [i.code, i.date, i.category, i.amount, i.vendor, i.paidVia, i.notes]))} className="gap-1"><Download className="h-4 w-4" /> CSV</Button>
+            <Button onClick={() => { setEditing(null); setOpen(true) }} className="gap-1"><Plus className="h-4 w-4" /> Add Expense</Button>
+          </div>
+        }
+      />
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+        <StatCard label={`Total (${month})`} value={fmtINR(total)} Icon={TrendingDown} tone="red" />
+        <StatCard label="Entries" value={items.length} Icon={Receipt} tone="amber" />
+        <StatCard label="Categories" value={new Set(items.map((i) => i.category)).size} Icon={PieChart} tone="blue" />
+      </div>
+      <Card>
+        <CardContent className="p-0 overflow-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+              <tr>
+                <th className="text-left p-3">Code</th>
+                <th className="text-left p-3">Date</th>
+                <th className="text-left p-3">Category</th>
+                <th className="text-left p-3">Vendor</th>
+                <th className="text-left p-3">Paid Via</th>
+                <th className="text-right p-3">Amount</th>
+                <th className="text-right p-3">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.length === 0 && <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">No expenses in this period.</td></tr>}
+              {items.map((i) => (
+                <tr key={i.id} className="border-t hover:bg-muted/30">
+                  <td className="p-3 font-mono text-xs">{i.code}</td>
+                  <td className="p-3">{i.date}</td>
+                  <td className="p-3"><Badge variant="outline">{i.category}</Badge></td>
+                  <td className="p-3 text-xs">{i.vendor}</td>
+                  <td className="p-3 text-xs">{i.paidVia}</td>
+                  <td className="p-3 text-right">{fmtINR(i.amount)}</td>
+                  <td className="p-3 text-right">
+                    <Button size="icon" variant="ghost" onClick={() => { setEditing(i); setOpen(true) }}><Edit3 className="h-4 w-4" /></Button>
+                    <Button size="icon" variant="ghost" onClick={() => remove(i.id)}><Trash2 className="h-4 w-4" /></Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+      <ExpenseForm open={open} onOpenChange={setOpen} initial={editing} onSaved={() => { setOpen(false); load() }} />
+    </div>
+  )
+}
+function ExpenseForm({ open, onOpenChange, initial, onSaved }) {
+  const [f, setF] = useState({})
+  useEffect(() => { setF(initial || { category: 'Office Rent', amount: 0, date: new Date().toISOString().slice(0, 10), vendor: '', paidVia: 'Cash', notes: '' }) }, [initial, open])
+  const submit = async (e) => {
+    e.preventDefault()
+    try {
+      if (initial) await api(`/expenses/${initial.id}`, { method: 'PUT', body: JSON.stringify(f) })
+      else await api('/expenses', { method: 'POST', body: JSON.stringify(f) })
+      toast.success('Saved'); onSaved()
+    } catch (e) { toast.error(e.message) }
+  }
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>{initial ? 'Edit Expense' : 'Add Expense'}</DialogTitle></DialogHeader>
+        <form onSubmit={submit} className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Category *</Label>
+              <Select value={f.category || 'Office Rent'} onValueChange={(v) => setF({ ...f, category: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>{EXPENSE_CATEGORIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div><Label>Amount (₹) *</Label><Input required type="number" value={f.amount || 0} onChange={(e) => setF({ ...f, amount: e.target.value })} /></div>
+            <div><Label>Date</Label><Input type="date" value={f.date || ''} onChange={(e) => setF({ ...f, date: e.target.value })} /></div>
+            <div>
+              <Label>Paid Via</Label>
+              <Select value={f.paidVia || 'Cash'} onValueChange={(v) => setF({ ...f, paidVia: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Cash">Cash</SelectItem>
+                  <SelectItem value="UPI">UPI</SelectItem>
+                  <SelectItem value="Bank Transfer">Bank Transfer</SelectItem>
+                  <SelectItem value="Card">Card</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="col-span-2"><Label>Vendor / Paid To</Label><Input value={f.vendor || ''} onChange={(e) => setF({ ...f, vendor: e.target.value })} /></div>
+            <div className="col-span-2"><Label>Notes</Label><Textarea rows={2} value={f.notes || ''} onChange={(e) => setF({ ...f, notes: e.target.value })} /></div>
+          </div>
+          <DialogFooter><Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button><Button type="submit">Save</Button></DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ============================= Incomes =============================
+function IncomesModule() {
+  const [items, setItems] = useState([])
+  const [clients, setClients] = useState([])
+  const [month, setMonth] = useState(new Date().toISOString().slice(0, 7))
+  const [open, setOpen] = useState(false)
+  const load = async () => { try { setItems(await api(`/incomes?month=${month}`)) } catch (e) { toast.error(e.message) } }
+  useEffect(() => { load(); api('/clients').then(setClients).catch(() => {}) }, [month])
+  const remove = async (id) => {
+    if (!confirm('Delete payment record?')) return
+    try { await api(`/incomes/${id}`, { method: 'DELETE' }); load() } catch (e) { toast.error(e.message) }
+  }
+  const total = items.reduce((a, b) => a + Number(b.amount || 0), 0)
+  return (
+    <div>
+      <SectionHeader
+        title="Income / Client Payments"
+        subtitle="Record client payments — linked placements & invoices auto-update"
+        action={
+          <div className="flex gap-2">
+            <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="w-40" />
+            <Button variant="outline" onClick={() => downloadCSV(`incomes-${month}`, ['Code','Date','Client','Amount','Method','Reference','Notes'], items.map((i) => [i.code, i.date, i.clientName, i.amount, i.method, i.reference, i.notes]))} className="gap-1"><Download className="h-4 w-4" /> CSV</Button>
+            <Button onClick={() => setOpen(true)} className="gap-1"><Plus className="h-4 w-4" /> Record Payment</Button>
+          </div>
+        }
+      />
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+        <StatCard label={`Total Collected (${month})`} value={fmtINR(total)} Icon={Wallet} tone="green" />
+        <StatCard label="Payments" value={items.length} Icon={Receipt} tone="blue" />
+        <StatCard label="Clients Paid" value={new Set(items.map((i) => i.clientId)).size} Icon={Building2} />
+      </div>
+      <Card>
+        <CardContent className="p-0 overflow-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+              <tr>
+                <th className="text-left p-3">Code</th>
+                <th className="text-left p-3">Date</th>
+                <th className="text-left p-3">Client</th>
+                <th className="text-left p-3">Method</th>
+                <th className="text-left p-3">Reference</th>
+                <th className="text-right p-3">Amount</th>
+                <th className="text-right p-3">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.length === 0 && <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">No payments recorded.</td></tr>}
+              {items.map((i) => (
+                <tr key={i.id} className="border-t hover:bg-muted/30">
+                  <td className="p-3 font-mono text-xs">{i.code}</td>
+                  <td className="p-3">{i.date}</td>
+                  <td className="p-3 font-medium">{i.clientName}</td>
+                  <td className="p-3 text-xs">{i.method}</td>
+                  <td className="p-3 text-xs">{i.reference}</td>
+                  <td className="p-3 text-right font-semibold text-emerald-600 dark:text-emerald-400">{fmtINR(i.amount)}</td>
+                  <td className="p-3 text-right"><Button size="icon" variant="ghost" onClick={() => remove(i.id)}><Trash2 className="h-4 w-4" /></Button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+      <IncomeForm open={open} onOpenChange={setOpen} clients={clients} onSaved={() => { setOpen(false); load() }} />
+    </div>
+  )
+}
+function IncomeForm({ open, onOpenChange, clients, onSaved }) {
+  const [f, setF] = useState({ clientId: '', amount: 0, method: 'UPI', reference: '', date: new Date().toISOString().slice(0, 10), notes: '', placementId: '', invoiceId: '' })
+  const [placements, setPlacements] = useState([])
+  const [invoices, setInvoices] = useState([])
+  useEffect(() => { if (open) setF({ clientId: '', amount: 0, method: 'UPI', reference: '', date: new Date().toISOString().slice(0, 10), notes: '', placementId: '', invoiceId: '' }) }, [open])
+  useEffect(() => {
+    if (!f.clientId) { setPlacements([]); setInvoices([]); return }
+    api('/placements').then((all) => setPlacements(all.filter((p) => p.clientId === f.clientId))).catch(() => {})
+    api('/invoices').then((all) => setInvoices(all.filter((i) => i.clientId === f.clientId && i.status !== 'paid'))).catch(() => {})
+  }, [f.clientId])
+  const submit = async (e) => {
+    e.preventDefault()
+    try {
+      await api('/incomes', { method: 'POST', body: JSON.stringify({ ...f, placementId: f.placementId || null, invoiceId: f.invoiceId || null }) })
+      toast.success('Payment recorded'); onSaved()
+    } catch (e) { toast.error(e.message) }
+  }
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Record Client Payment</DialogTitle></DialogHeader>
+        <form onSubmit={submit} className="space-y-3">
+          <div>
+            <Label>Client *</Label>
+            <Select value={f.clientId} onValueChange={(v) => setF({ ...f, clientId: v })}>
+              <SelectTrigger><SelectValue placeholder="Select client" /></SelectTrigger>
+              <SelectContent>{clients.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
+            </Select>
+          </div>
+          {placements.length > 0 && (
+            <div>
+              <Label>Link to Placement (optional)</Label>
+              <Select value={f.placementId || 'none'} onValueChange={(v) => setF({ ...f, placementId: v === 'none' ? '' : v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">None</SelectItem>
+                  {placements.map((p) => <SelectItem key={p.id} value={p.id}>{p.code} · {p.staffName}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+          {invoices.length > 0 && (
+            <div>
+              <Label>Link to Invoice (optional)</Label>
+              <Select value={f.invoiceId || 'none'} onValueChange={(v) => setF({ ...f, invoiceId: v === 'none' ? '' : v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">None</SelectItem>
+                  {invoices.map((i) => <SelectItem key={i.id} value={i.id}>{i.number} · {fmtINR(i.totalAmount - (i.paidAmount || 0))} pending</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            <div><Label>Amount (₹) *</Label><Input required type="number" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} /></div>
+            <div><Label>Date</Label><Input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} /></div>
+            <div>
+              <Label>Method</Label>
+              <Select value={f.method} onValueChange={(v) => setF({ ...f, method: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="UPI">UPI</SelectItem>
+                  <SelectItem value="Cash">Cash</SelectItem>
+                  <SelectItem value="Bank Transfer">Bank Transfer</SelectItem>
+                  <SelectItem value="Cheque">Cheque</SelectItem>
+                  <SelectItem value="Card">Card</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div><Label>Reference / UTR</Label><Input value={f.reference} onChange={(e) => setF({ ...f, reference: e.target.value })} /></div>
+            <div className="col-span-2"><Label>Notes</Label><Textarea rows={2} value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} /></div>
+          </div>
+          <DialogFooter><Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button><Button type="submit">Save</Button></DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ============================= Invoices =============================
+function InvoicesModule() {
+  const [items, setItems] = useState([])
+  const [open, setOpen] = useState(false)
+  const load = async () => { try { setItems(await api('/invoices')) } catch (e) { toast.error(e.message) } }
+  useEffect(() => { load() }, [])
+  const remove = async (id) => {
+    if (!confirm('Delete invoice?')) return
+    try { await api(`/invoices/${id}`, { method: 'DELETE' }); load() } catch (e) { toast.error(e.message) }
+  }
+  const view = async (id) => {
+    try {
+      const inv = await api(`/invoices/${id}`)
+      printHTML(`Invoice ${inv.number}`, invoiceHTML(inv))
+    } catch (e) { toast.error(e.message) }
+  }
+  const total = items.reduce((a, b) => a + Number(b.totalAmount || 0), 0)
+  const paid = items.reduce((a, b) => a + Number(b.paidAmount || 0), 0)
+  return (
+    <div>
+      <SectionHeader
+        title="Invoices"
+        subtitle="Auto-generated professional invoices per placement per month"
+        action={
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => downloadCSV('invoices', ['Number','Client','Placement','Month','Total','Paid','Pending','Status','Issued','Due'], items.map((i) => [i.number, i.clientName, i.placementCode, i.month, i.totalAmount, i.paidAmount, i.totalAmount - i.paidAmount, i.status, i.issuedOn, i.dueOn]))} className="gap-1"><Download className="h-4 w-4" /> CSV</Button>
+            <Button onClick={() => setOpen(true)} className="gap-1"><Plus className="h-4 w-4" /> Generate Invoice</Button>
+          </div>
+        }
+      />
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        <StatCard label="Total Invoices" value={items.length} Icon={FileText} tone="blue" />
+        <StatCard label="Total Billed" value={fmtINR(total)} Icon={TrendingUp} tone="green" />
+        <StatCard label="Collected" value={fmtINR(paid)} Icon={Wallet} tone="green" />
+        <StatCard label="Outstanding" value={fmtINR(total - paid)} Icon={IndianRupee} tone="red" />
+      </div>
+      <Card>
+        <CardContent className="p-0 overflow-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+              <tr>
+                <th className="text-left p-3">Number</th>
+                <th className="text-left p-3">Client</th>
+                <th className="text-left p-3">Placement</th>
+                <th className="text-left p-3">Month</th>
+                <th className="text-right p-3">Total</th>
+                <th className="text-right p-3">Paid</th>
+                <th className="text-right p-3">Pending</th>
+                <th className="text-left p-3">Status</th>
+                <th className="text-right p-3">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.length === 0 && <tr><td colSpan={9} className="p-8 text-center text-muted-foreground">No invoices yet.</td></tr>}
+              {items.map((i) => (
+                <tr key={i.id} className="border-t hover:bg-muted/30">
+                  <td className="p-3 font-mono text-xs">{i.number}</td>
+                  <td className="p-3 font-medium">{i.clientName}<div className="text-xs text-muted-foreground">{i.patientName}</div></td>
+                  <td className="p-3 text-xs">{i.placementCode}</td>
+                  <td className="p-3">{i.month}</td>
+                  <td className="p-3 text-right">{fmtINR(i.totalAmount)}</td>
+                  <td className="p-3 text-right">{fmtINR(i.paidAmount)}</td>
+                  <td className="p-3 text-right text-rose-600 dark:text-rose-400">{fmtINR(i.totalAmount - i.paidAmount)}</td>
+                  <td className="p-3"><Badge variant={i.status === 'paid' ? 'default' : i.status === 'partial' ? 'secondary' : 'outline'}>{i.status}</Badge></td>
+                  <td className="p-3 text-right whitespace-nowrap">
+                    <Button size="icon" variant="ghost" onClick={() => view(i.id)}><Printer className="h-4 w-4" /></Button>
+                    <Button size="icon" variant="ghost" onClick={() => remove(i.id)}><Trash2 className="h-4 w-4" /></Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+      <InvoiceForm open={open} onOpenChange={setOpen} onSaved={() => { setOpen(false); load() }} />
+    </div>
+  )
+}
+function invoiceHTML(inv) {
+  const s = inv.snapshot || {}
+  const pending = inv.totalAmount - (inv.paidAmount || 0)
+  return `<div class="head">
+    <div>
+      <div class="brand">${s.agencyName || 'Agency'}</div>
+      <div class="muted">${s.agencyAddress || ''} ${s.agencyCity || ''}<br/>${s.agencyPhone || ''}</div>
+    </div>
+    <div style="text-align:right"><div style="font-size:18px;font-weight:700">TAX INVOICE</div>
+      <div>${inv.number}</div>
+      <div class="muted">Issued: ${inv.issuedOn} · Due: ${inv.dueOn}</div>
+      <div><span class="badge">${inv.status.toUpperCase()}</span></div>
+    </div>
+  </div>
+  <div class="grid">
+    <div class="box"><b>Bill To</b><br/>${s.clientName || ''}<br/>Patient: ${s.patientName || '-'}<br/>${s.clientAddress || ''} ${s.clientCity || ''}<br/>${s.clientPhone || ''}</div>
+    <div class="box"><b>Service Period</b><br/>Month: ${inv.month}<br/>Days worked: ${inv.daysWorked} / ${inv.daysInMonth}<br/>Per day rate: ₹${inv.perDay.toLocaleString('en-IN')}</div>
+  </div>
+  <table>
+    <tr><th>Description</th><th class="right">Amount (₹)</th></tr>
+    <tr><td>Care service charges — ${inv.daysWorked} days @ ₹${inv.perDay}/day</td><td class="right">${inv.subTotal.toLocaleString('en-IN')}</td></tr>
+    ${inv.extras ? `<tr><td>Extra charges</td><td class="right">${inv.extras.toLocaleString('en-IN')}</td></tr>` : ''}
+    ${inv.discount ? `<tr><td>Discount</td><td class="right">-${inv.discount.toLocaleString('en-IN')}</td></tr>` : ''}
+    ${inv.tax ? `<tr><td>Tax (${inv.taxPct}%)</td><td class="right">${inv.tax.toLocaleString('en-IN')}</td></tr>` : ''}
+    <tr class="total"><td>Total</td><td class="right">₹${inv.totalAmount.toLocaleString('en-IN')}</td></tr>
+    <tr><td>Paid</td><td class="right">₹${(inv.paidAmount || 0).toLocaleString('en-IN')}</td></tr>
+    <tr class="total"><td>Amount Due</td><td class="right">₹${pending.toLocaleString('en-IN')}</td></tr>
+  </table>
+  ${inv.notes ? `<h2>Notes</h2><div>${inv.notes}</div>` : ''}
+  <div style="margin-top:24px;font-size:11px;color:#666">Thank you for choosing us for your care needs.</div>`
+}
+function InvoiceForm({ open, onOpenChange, onSaved }) {
+  const [clients, setClients] = useState([])
+  const [placements, setPlacements] = useState([])
+  const [f, setF] = useState({ clientId: '', placementId: '', month: new Date().toISOString().slice(0, 7), extras: 0, discount: 0, taxPct: 0, dueOn: '', notes: '' })
+  useEffect(() => { if (open) { api('/clients').then(setClients); api('/placements').then(setPlacements) } }, [open])
+  const clientPlacements = placements.filter((p) => p.clientId === f.clientId)
+  const submit = async (e) => {
+    e.preventDefault()
+    try {
+      await api('/invoices', { method: 'POST', body: JSON.stringify(f) })
+      toast.success('Invoice generated'); onSaved()
+    } catch (e) { toast.error(e.message) }
+  }
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Generate Invoice</DialogTitle><DialogDescription>Days worked in month are auto-computed from the placement date range.</DialogDescription></DialogHeader>
+        <form onSubmit={submit} className="space-y-3">
+          <div>
+            <Label>Client *</Label>
+            <Select value={f.clientId} onValueChange={(v) => setF({ ...f, clientId: v, placementId: '' })}>
+              <SelectTrigger><SelectValue placeholder="Select client" /></SelectTrigger>
+              <SelectContent>{clients.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>Placement *</Label>
+            <Select value={f.placementId} onValueChange={(v) => setF({ ...f, placementId: v })}>
+              <SelectTrigger><SelectValue placeholder="Select placement" /></SelectTrigger>
+              <SelectContent>
+                {clientPlacements.length === 0 && <div className="p-2 text-xs text-muted-foreground">No placements — create one first</div>}
+                {clientPlacements.map((p) => <SelectItem key={p.id} value={p.id}>{p.code} · {p.staffName} · {fmtINR(p.monthlyClientCharge)}/mo</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><Label>Month *</Label><Input type="month" required value={f.month} onChange={(e) => setF({ ...f, month: e.target.value })} /></div>
+            <div><Label>Due Date</Label><Input type="date" value={f.dueOn} onChange={(e) => setF({ ...f, dueOn: e.target.value })} /></div>
+            <div><Label>Extra Charges (₹)</Label><Input type="number" value={f.extras} onChange={(e) => setF({ ...f, extras: e.target.value })} /></div>
+            <div><Label>Discount (₹)</Label><Input type="number" value={f.discount} onChange={(e) => setF({ ...f, discount: e.target.value })} /></div>
+            <div><Label>Tax %</Label><Input type="number" value={f.taxPct} onChange={(e) => setF({ ...f, taxPct: e.target.value })} /></div>
+          </div>
+          <div><Label>Notes</Label><Textarea rows={2} value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} /></div>
+          <DialogFooter><Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button><Button type="submit">Generate</Button></DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ============================= Patients =============================
+function PatientsModule() {
+  const [items, setItems] = useState([])
+  const load = async () => { try { setItems(await api('/clients')) } catch (e) { toast.error(e.message) } }
+  useEffect(() => { load() }, [])
+  const patientClients = items.filter((c) => c.patientName)
+
+  return (
+    <div>
+      <SectionHeader
+        title="Patients"
+        subtitle="Patient-focused view — medical requirements, care instructions, assigned staff"
+      />
+      <div className="grid md:grid-cols-2 gap-3">
+        {patientClients.length === 0 && <p className="text-sm text-muted-foreground">No patients yet. Add clients with patient names to see them here.</p>}
+        {patientClients.map((c) => (
+          <Card key={c.id}>
+            <CardHeader>
+              <div className="flex items-start justify-between">
+                <div>
+                  <CardTitle className="text-base">{c.patientName}</CardTitle>
+                  <CardDescription>Client: {c.name} · {c.phone}</CardDescription>
+                </div>
+                <Badge variant="outline">{c.location}</Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm">
+              {c.careType && <div><span className="text-xs uppercase text-muted-foreground">Care</span><div>{c.careType}</div></div>}
+              {(c.doctorName || c.hospital) && <div><span className="text-xs uppercase text-muted-foreground">Doctor</span><div>{c.doctorName} {c.hospital && `— ${c.hospital}`}</div></div>}
+              <div className="flex flex-wrap gap-1">
+                {c.rtTube && <Badge variant="secondary">RT</Badge>}
+                {c.ttTube && <Badge variant="secondary">TT</Badge>}
+                {c.oxygen && <Badge variant="secondary">Oxygen</Badge>}
+                {c.catheter && <Badge variant="secondary">Catheter</Badge>}
+                {c.tracheostomy && <Badge variant="secondary">Tracheostomy</Badge>}
+                {c.rylesTube && <Badge variant="secondary">Ryles</Badge>}
+              </div>
+              {c.medicalNotes && <div className="text-xs"><span className="uppercase text-muted-foreground">Medical:</span> {c.medicalNotes}</div>}
+              {c.medicineNotes && <div className="text-xs"><span className="uppercase text-muted-foreground">Medicines:</span> {c.medicineNotes}</div>}
+              {c.feedingInstructions && <div className="text-xs"><span className="uppercase text-muted-foreground">Feeding:</span> {c.feedingInstructions}</div>}
+              {c.specialInstructions && <div className="text-xs"><span className="uppercase text-muted-foreground">Special:</span> {c.specialInstructions}</div>}
+              {c.emergencyContact && <div className="text-xs"><span className="uppercase text-muted-foreground">Emergency:</span> {c.emergencyContact}</div>}
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ============================= Reports Hub =============================
+function ReportsModule() {
+  const [tab, setTab] = useState('placement')
+  const [data, setData] = useState([])
+  const [month, setMonth] = useState(new Date().toISOString().slice(0, 7))
+
+  const load = useCallback(async () => {
+    try {
+      if (tab === 'placement') setData(await api('/reports/placement'))
+      else if (tab === 'staff') setData(await api('/reports/staff'))
+      else if (tab === 'client') setData(await api('/reports/client'))
+      else if (tab === 'attendance') { const r = await api(`/reports/attendance?month=${month}`); setData(r.rows) }
+    } catch (e) { toast.error(e.message) }
+  }, [tab, month])
+  useEffect(() => { load() }, [load])
+
+  const columns = {
+    placement: [
+      { k: 'code', h: 'Code' }, { k: 'status', h: 'Status' }, { k: 'staffName', h: 'Staff' },
+      { k: 'clientName', h: 'Client' }, { k: 'patientName', h: 'Patient' }, { k: 'vendorName', h: 'Vendor' },
+      { k: 'joinDate', h: 'Join' }, { k: 'offDate', h: 'Off' }, { k: 'workingDays', h: 'Days' },
+      { k: 'clientBill', h: 'Bill', money: true }, { k: 'staffSalary', h: 'Salary', money: true },
+      { k: 'vendorCommission', h: 'Comm', money: true }, { k: 'agencyProfit', h: 'Profit', money: true },
+      { k: 'clientPaid', h: 'Paid', money: true }, { k: 'pendingClient', h: 'Pending Client', money: true },
+    ],
+    staff: [
+      { k: 'staffCode', h: 'Code' }, { k: 'name', h: 'Name' }, { k: 'phone', h: 'Phone' },
+      { k: 'status', h: 'Status' }, { k: 'qualification', h: 'Qualification' },
+      { k: 'monthlySalary', h: 'Monthly', money: true }, { k: 'joiningDate', h: 'Joined' },
+      { k: 'totalPlacements', h: 'Total' }, { k: 'activePlacements', h: 'Active' }, { k: 'completedPlacements', h: 'Done' },
+    ],
+    client: [
+      { k: 'code', h: 'Code' }, { k: 'name', h: 'Name' }, { k: 'patientName', h: 'Patient' },
+      { k: 'phone', h: 'Phone' }, { k: 'city', h: 'City' }, { k: 'location', h: 'Loc' },
+      { k: 'monthlyCharges', h: 'Monthly', money: true }, { k: 'totalPlacements', h: 'Placements' },
+      { k: 'totalBilled', h: 'Billed', money: true }, { k: 'totalPaid', h: 'Paid', money: true }, { k: 'pending', h: 'Pending', money: true },
+    ],
+    attendance: [
+      { k: 'staffCode', h: 'Code' }, { k: 'name', h: 'Name' },
+      { k: 'present', h: 'P' }, { k: 'absent', h: 'A' }, { k: 'half', h: 'H' },
+      { k: 'late', h: 'LATE' }, { k: 'leave', h: 'Leave' }, { k: 'paidLeave', h: 'Paid Lv' },
+      { k: 'workingDays', h: 'Effective' }, { k: 'totalDays', h: 'Total' }, { k: 'percentage', h: '%' },
+    ],
+  }
+  const cols = columns[tab]
+  const exportCSV = () => {
+    downloadCSV(`report-${tab}${tab==='attendance'?'-'+month:''}`, cols.map((c) => c.h), data.map((r) => cols.map((c) => r[c.k])))
+  }
+  const printReport = () => {
+    const tRows = data.map((r) => `<tr>${cols.map((c) => `<td class="${c.money ? 'right' : ''}">${c.money ? '₹' + Number(r[c.k] || 0).toLocaleString('en-IN') : (r[c.k] ?? '')}</td>`).join('')}</tr>`).join('')
+    printHTML(`Report — ${tab}${tab==='attendance'?' '+month:''}`, `<div class="head"><div><div class="brand">${tab.toUpperCase()} REPORT</div><div class="muted">${tab==='attendance'?month:'All time'} · Generated ${new Date().toLocaleString()}</div></div></div><table><tr>${cols.map((c) => `<th>${c.h}</th>`).join('')}</tr>${tRows}</table>`)
+  }
+
+  return (
+    <div>
+      <SectionHeader
+        title="Reports"
+        subtitle="Cross-module reports with CSV (Excel) & PDF export"
+        action={
+          <div className="flex gap-2">
+            {tab === 'attendance' && <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="w-40" />}
+            <Button variant="outline" onClick={exportCSV} className="gap-1"><Download className="h-4 w-4" /> CSV</Button>
+            <Button variant="outline" onClick={printReport} className="gap-1"><Printer className="h-4 w-4" /> PDF</Button>
+          </div>
+        }
+      />
+      <Tabs value={tab} onValueChange={setTab}>
+        <TabsList className="grid grid-cols-4 w-full max-w-2xl">
+          <TabsTrigger value="placement">Placements</TabsTrigger>
+          <TabsTrigger value="staff">Staff</TabsTrigger>
+          <TabsTrigger value="client">Clients</TabsTrigger>
+          <TabsTrigger value="attendance">Attendance</TabsTrigger>
+        </TabsList>
+      </Tabs>
+      <Card className="mt-4">
+        <CardContent className="p-0 overflow-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+              <tr>{cols.map((c) => <th key={c.k} className={`p-3 ${c.money ? 'text-right' : 'text-left'}`}>{c.h}</th>)}</tr>
+            </thead>
+            <tbody>
+              {data.length === 0 && <tr><td colSpan={cols.length} className="p-8 text-center text-muted-foreground">No data.</td></tr>}
+              {data.map((r, idx) => (
+                <tr key={idx} className="border-t hover:bg-muted/30">
+                  {cols.map((c) => (
+                    <td key={c.k} className={`p-3 ${c.money ? 'text-right tabular-nums' : ''}`}>
+                      {c.money ? fmtINR(r[c.k]) : (r[c.k] ?? '')}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
 // ============================= Root App =============================
 function App() {
   const [screen, setScreen] = useState('loading') // loading | landing | auth | app
@@ -1404,10 +2483,19 @@ function App() {
   return (
     <Shell user={user} agency={agency} onLogout={logout} active={active} setActive={setActive}>
       {active === 'dashboard' && <Dashboard setActive={setActive} />}
+      {active === 'pnl' && <PnLModule />}
+      {active === 'placements' && <PlacementsModule />}
+      {active === 'register' && <RegisterModule />}
+      {active === 'attendance' && <AttendanceModule />}
       {active === 'staff' && <StaffModule />}
       {active === 'clients' && <ClientsModule />}
+      {active === 'patients' && <PatientsModule />}
       {active === 'vendors' && <VendorsModule />}
-      {active === 'placements' && <PlacementsModule />}
+      {active === 'invoices' && <InvoicesModule />}
+      {active === 'incomes' && <IncomesModule />}
+      {active === 'expenses' && <ExpensesModule />}
+      {active === 'salary' && <SalaryModule />}
+      {active === 'reports' && <ReportsModule />}
     </Shell>
   )
 }
