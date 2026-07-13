@@ -119,7 +119,7 @@ if result and result.get('needsSetup'):
         test_data["super_admin"]["password"] = setup_data["password"]
 else:
     # Login with existing super admin
-    login_data = {"email": "priyanshupandey0078@gmail.com", "password": "SuperSecure99!"}
+    login_data = {"email": "priyanshupandey0078@gmail.com", "password": "SuperSecure999!"}
     login_result = test_request("POST", "/auth/login", data=login_data, 
                                desc="1.2 Login existing super admin")
     if login_result:
