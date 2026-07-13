@@ -1,0 +1,262 @@
+
+====================================================================================================
+DUTYONTRACK FULL PRODUCTION AUDIT - BACKEND REGRESSION TEST
+====================================================================================================
+
+
+[1] SETUP WIZARD
+----------------------------------------------------------------------------------------------------
+✅ 1.1 GET /setup/status
+ℹ️     needsSetup=True, hasSuperAdmin=False
+✅ 1.2 POST /setup/complete creates super admin
+✅ 1.3 Second /setup/complete returns 409
+
+[2] PUBLIC ENDPOINTS
+----------------------------------------------------------------------------------------------------
+✅ 2.1 GET /settings/public (no auth)
+✅     Public settings has 5/5 bank fields
+✅ 2.2 GET /plans/public returns 4 defaults
+✅     All 4 default plans present: ['FREE', 'STARTER', 'PROFESSIONAL', 'ENTERPRISE']
+
+[3] REGISTRATION
+----------------------------------------------------------------------------------------------------
+✅ 3.1 POST /auth/signup creates agency
+✅     Agency plan=FREE
+✅     Limits: maxStaff=5, maxClients=5, maxVendors=5
+
+[4] LOGIN
+----------------------------------------------------------------------------------------------------
+✅ 4.1 POST /auth/login with valid credentials
+✅ 4.2 POST /auth/login with invalid credentials returns 401
+
+[5] AUTH/ME
+----------------------------------------------------------------------------------------------------
+✅ 5.1 GET /auth/me with Bearer token
+✅     Returns user + agency
+✅ 5.2 GET /auth/me without token returns 401
+
+[6] MULTI-TENANT ISOLATION
+----------------------------------------------------------------------------------------------------
+✅ 6.1 Create second agency for isolation test
+✅ 6.2 Agency1 creates staff
+✅ 6.3 Agency2 creates staff
+✅ 6.4 Agency1 GET /staff
+✅     Agency1 sees only 1 staff (its own)
+✅ 6.5 Agency2 GET /staff
+✅     Agency2 sees only 1 staff (its own)
+✅ 6.6 Agency2 cannot access Agency1's staff (404)
+
+[7] STAFF CRUD + FREE PLAN LIMIT
+----------------------------------------------------------------------------------------------------
+✅ 7.2 Add staff 2/5
+✅ 7.3 Add staff 3/5
+✅ 7.4 Add staff 4/5
+✅ 7.5 Add staff 5/5
+✅ 7.6 6th staff returns 402 (limit reached)
+✅     staffCode has STF prefix: STF2444
+✅ 7.7 PUT /staff/:id updates staff
+✅ 7.8 DELETE /staff/:id removes staff
+
+[8] CLIENTS CRUD + MEDICAL FIELDS
+----------------------------------------------------------------------------------------------------
+✅ 8.1 Add client 1/5 with medical fields
+✅     Medical boolean fields persist correctly
+✅ 8.2 Add client 2/5 with medical fields
+✅ 8.3 Add client 3/5 with medical fields
+✅ 8.4 Add client 4/5 with medical fields
+✅ 8.5 Add client 5/5 with medical fields
+✅ 8.6 6th client returns 402 (limit reached)
+✅ 8.7 PUT /clients/:id updates medical fields
+✅     Medical fields updated correctly
+
+[9] VENDORS CRUD + COMMISSION TYPES
+----------------------------------------------------------------------------------------------------
+✅ 9.1 Create vendor with fixed commission
+✅     Fixed commission persists correctly
+✅ 9.2 Create vendor with percent commission
+✅     Percent commission persists correctly
+✅ 9.3 Add vendor 3/5
+✅ 9.4 Add vendor 4/5
+✅ 9.5 Add vendor 5/5
+✅ 9.6 6th vendor returns 402 (limit reached)
+
+[10] PLACEMENTS + AUTO PROFIT CALCULATION
+----------------------------------------------------------------------------------------------------
+✅ 10.1 Create placement with percent commission
+✅ 10.2 GET /placements returns enriched data
+✅     workingDays = 30
+✅     clientBill = 30000
+✅     staffSalary = 18000
+✅     vendorCommission = 3000 (10% of 30000)
+✅     agencyProfit = 9000
+✅ 10.3 Check staff status
+✅     Staff status changed to 'onduty'
+✅ 10.4 PUT /placements/:id with offDate
+✅     Placement status changed to 'completed'
+✅ 10.5 Check staff status after offDate
+✅     Staff status changed back to 'available'
+✅ 10.6 Create placement with fixed commission
+
+[11] ATTENDANCE AUTO-BACKFILL
+----------------------------------------------------------------------------------------------------
+✅ 11.1 GET /attendance auto-backfilled
+✅     Auto-backfilled 13 Present entries
+✅ 11.2 POST /attendance upserts status
+✅ 11.3 POST /attendance/bulk upserts multiple
+
+[12] SALARY COMPUTE + PAYMENTS
+----------------------------------------------------------------------------------------------------
+✅ 12.1 GET /salary computes slip
+ℹ️     Stats: present=10, effective=11.5
+ℹ️     perDay=933, gross=10733
+✅ 12.2 POST /salary/payment type=advance
+✅ 12.3 POST /salary/payment type=paid
+✅ 12.4 GET /salary reflects payments
+✅     Payments recorded: advance=1000, paid=3000
+✅ 12.5 GET /salary/all returns summary
+
+[13] EXPENSES CRUD
+----------------------------------------------------------------------------------------------------
+✅ 13.1 POST /expenses creates with EXP code
+✅     Expense code: EXP1297
+✅ 13.2 GET /expenses?month filters correctly
+✅ 13.3 PUT /expenses/:id updates
+✅ 13.4 DELETE /expenses/:id removes
+
+[14] INCOMES SIDE-EFFECTS
+----------------------------------------------------------------------------------------------------
+✅ 14.1 POST /incomes with placementId
+✅ 14.2 Verify placement.clientPaid increased
+✅     placement.clientPaid = 15000
+✅ 14.3 DELETE /incomes reverses side-effects
+✅ 14.4 Verify placement.clientPaid reversed
+✅     placement.clientPaid reversed to 0
+
+[15] INVOICES AUTO-GENERATION
+----------------------------------------------------------------------------------------------------
+✅ 15.1 POST /invoices generates with INV-YYYY-##### format
+✅     Invoice number: INV-2026-00001
+✅     daysWorked calculated: 13
+✅     Snapshot populated with agencyName and clientName
+✅ 15.2 GET /invoices returns enriched list
+✅     Invoice enriched with clientName, placementCode
+✅ 15.3 GET /invoices/:id returns full invoice
+✅ 15.4 POST /incomes updates invoice status to paid
+✅ 15.5 Verify invoice status changed to paid
+✅     Invoice status changed to 'paid'
+
+[16] REPORTS
+----------------------------------------------------------------------------------------------------
+✅ 16.1 GET /reports/pnl?month returns monthly P&L
+✅     P&L has all required fields
+✅ 16.2 GET /reports/pnl (no month) returns all-time
+✅ 16.3 GET /reports/placement returns array
+✅ 16.4 GET /reports/staff returns array
+✅ 16.5 GET /reports/client returns array
+✅ 16.6 GET /reports/attendance?month returns array
+
+[17] CSV EXPORT
+----------------------------------------------------------------------------------------------------
+✅     Content-Type: text/csv
+✅     Content-Disposition: attachment
+
+[18] DIGITAL REGISTER
+----------------------------------------------------------------------------------------------------
+✅ 18.1 GET /register returns activities
+✅ 18.2 GET /register?type filters by type
+✅ 18.3 GET /register?date filters by date
+
+[19] SUBSCRIPTION E2E (CRITICAL)
+----------------------------------------------------------------------------------------------------
+✅ 19.1 Create fresh agency for subscription test
+✅ 19.2 Add staff 1/5
+✅ 19.3 Add staff 2/5
+✅ 19.4 Add staff 3/5
+✅ 19.5 Add staff 4/5
+✅ 19.6 Add staff 5/5
+✅ 19.7 6th staff returns 402
+✅ 19.8 GET /subscription/plans
+✅ 19.9 GET /subscription/me
+✅     usage.staffCount = 5
+✅ 19.10 POST /subscription/request
+✅ 19.11 SA GET pending requests
+✅     Request has agencyName: Subscription Test Agency
+✅ 19.12 SA approves payment request
+✅     Receipt generated: RCP-2026-00003
+✅ 19.13 Verify agency upgraded to PROFESSIONAL
+✅     Agency plan = PROFESSIONAL
+✅     Agency maxStaff = 100
+✅     expiryDate set: 2026-08-12
+✅ 19.14 GET /receipts shows receipt
+✅     Agency has 1 receipt(s)
+✅ 19.15 6th staff succeeds after upgrade
+
+[20] AGENCY MANAGEMENT (SA)
+----------------------------------------------------------------------------------------------------
+✅ 20.1 GET /admin/agencies
+✅     Retrieved 29 agencies
+✅ 20.2 POST /suspend
+✅ 20.3 POST /activate
+✅ 20.4 POST /change-plan
+✅ 20.5 POST /reset-password
+✅ 20.6 POST /login-as
+✅ 20.7 Impersonation token works with /auth/me
+✅     Impersonation returns agency_owner
+✅ 20.8 Create agency for deletion
+✅ 20.9 DELETE /admin/agencies/:id (cascade)
+
+[21] ADMIN DASHBOARD
+----------------------------------------------------------------------------------------------------
+✅ 21.1 GET /admin/dashboard
+ℹ️     Cards: totalAgencies=29, totalRevenue=4497
+✅     Growth array has 6 months
+
+[22] AUDIT LOG
+----------------------------------------------------------------------------------------------------
+✅ 22.1 GET /admin/audit
+✅     Retrieved 8 audit entries
+ℹ️     Recent actions: agency_deleted, impersonate, password_reset, plan_changed, agency_activated
+
+[23] SUPPORT TICKETS
+----------------------------------------------------------------------------------------------------
+✅ 23.1 Agency creates ticket
+✅ 23.2 SA GET tickets with agencyName
+✅     Ticket has agencyName: Healthcare Staffing Solutions
+✅ 23.3 SA replies to ticket
+✅ 23.4 Update ticket status
+✅ 23.5 Agency2 GET tickets
+
+[24] PLATFORM SETTINGS (SA)
+----------------------------------------------------------------------------------------------------
+✅ 24.1 SA GET /settings/platform
+ℹ️     Retrieved 25 settings fields
+✅ 24.2 SA PUT /settings/platform
+✅ 24.3 Non-SA GET /settings/platform returns 403
+
+[25] PLANS CRUD (SA)
+----------------------------------------------------------------------------------------------------
+✅ 25.1 SA GET /plans
+✅ 25.2 SA POST /plans creates custom
+✅ 25.3 SA PUT /plans/:id updates
+✅ 25.4 SA DELETE /plans/:id removes
+
+[26] PRODUCTION ASSETS
+----------------------------------------------------------------------------------------------------
+✅ 26.1 GET /robots.txt returns 200 with User-Agent
+✅ 26.2 GET /sitemap.xml returns 200 with valid XML
+✅ 26.3 GET /manifest.webmanifest returns 200 with valid JSON
+✅ 26.4 GET /icon.svg returns 200
+✅ 26.5 GET /nonexistent-page returns 404
+
+====================================================================================================
+TEST SUITE COMPLETE
+====================================================================================================
+
+✅ PASSED: 160
+❌ FAILED: 0
+📊 TOTAL: 160
+📈 SUCCESS RATE: 100.0%
+
+
+====================================================================================================
+
