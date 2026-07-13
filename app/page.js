@@ -37,7 +37,13 @@ async function api(path, opts = {}) {
     },
   })
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`)
+  if (!res.ok) {
+    // Fire an upgrade-required custom event on 402
+    if (res.status === 402 && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('dot:upgrade-required', { detail: data.error }))
+    }
+    throw new Error(data.error || `Request failed (${res.status})`)
+  }
   return data
 }
 
@@ -285,10 +291,18 @@ const NAV = [
   { key: 'expenses', label: 'Expenses', Icon: Receipt, group: 'Finance' },
   { key: 'salary', label: 'Salary', Icon: IndianRupee, group: 'Finance' },
   { key: 'reports', label: 'Reports', Icon: BarChart3, group: 'Analytics' },
+  { key: 'subscription', label: 'Subscription', Icon: Sparkles, group: 'Account' },
+  { key: 'supporttickets', label: 'Support', Icon: Zap, group: 'Account' },
 ]
 
 function Shell({ user, agency, onLogout, children, active, setActive }) {
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [upgradeMsg, setUpgradeMsg] = useState('')
+  useEffect(() => {
+    const handler = (e) => setUpgradeMsg(e.detail || 'You have reached your plan limit')
+    window.addEventListener('dot:upgrade-required', handler)
+    return () => window.removeEventListener('dot:upgrade-required', handler)
+  }, [])
   return (
     <div className="min-h-screen bg-muted/30">
       {/* Top bar */}
@@ -365,6 +379,23 @@ function Shell({ user, agency, onLogout, children, active, setActive }) {
 
         <main className="flex-1 p-4 md:p-6">{children}</main>
       </div>
+
+      {/* Upgrade required popup */}
+      <Dialog open={!!upgradeMsg} onOpenChange={(o) => !o && setUpgradeMsg('')}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Sparkles className="h-5 w-5 text-primary" /> Plan Limit Reached</DialogTitle>
+            <DialogDescription>{upgradeMsg}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 text-sm">
+            <p>Your current plan is <b>{agency?.plan}</b>. Upgrade to add more staff, clients and vendors, plus unlock premium features.</p>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setUpgradeMsg('')}>Later</Button>
+            <Button onClick={() => { setUpgradeMsg(''); setActive('subscription') }}>View Plans</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -2440,21 +2471,1010 @@ function ReportsModule() {
   )
 }
 
+// ============================= First-time Setup Wizard =============================
+function SetupWizard({ onComplete }) {
+  const [step, setStep] = useState(1)
+  const [saving, setSaving] = useState(false)
+  const [f, setF] = useState({
+    name: '', email: '', password: '', phone: '',
+    platformName: 'DutyOnTrack',
+    supportWhatsapp: '', supportEmail: '', supportPhone: '',
+    companyName: '', companyAddress: '', gstNumber: '',
+    invoicePrefix: 'INV', receiptPrefix: 'RCP',
+    accountHolderName: '', bankName: '', accountNumber: '', ifscCode: '', upiId: '',
+    logoUrl: '', qrCodeUrl: '',
+  })
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }))
+
+  const uploadImage = async (e, key) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (file.size > 500 * 1024) { toast.error('Please choose an image under 500KB'); return }
+    const reader = new FileReader()
+    reader.onload = () => set(key, reader.result)
+    reader.readAsDataURL(file)
+  }
+
+  const submit = async () => {
+    setSaving(true)
+    try {
+      const data = await api('/setup/complete', { method: 'POST', body: JSON.stringify(f) })
+      setToken(data.token)
+      toast.success('Platform setup complete!')
+      onComplete(data)
+    } catch (e) { toast.error(e.message) } finally { setSaving(false) }
+  }
+
+  const canNext =
+    step === 1 ? f.name && f.email && f.password && f.password.length >= 6 :
+    step === 2 ? f.platformName :
+    step === 3 ? true : true
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 flex items-center justify-center p-4">
+      <Card className="w-full max-w-2xl">
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <Logo />
+            <Badge variant="outline" className="gap-1"><Sparkles className="h-3 w-3" /> First-time Setup</Badge>
+          </div>
+          <CardTitle className="text-2xl mt-3">Welcome to DutyOnTrack</CardTitle>
+          <CardDescription>Let&apos;s configure your platform. Step {step} of 4.</CardDescription>
+          <div className="flex gap-1 mt-3">
+            {[1, 2, 3, 4].map((n) => (
+              <div key={n} className={`h-1.5 flex-1 rounded ${n <= step ? 'bg-primary' : 'bg-muted'}`} />
+            ))}
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {step === 1 && (
+            <>
+              <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Super Admin Account</h3>
+              <div><Label>Full Name *</Label><Input value={f.name} onChange={(e) => set('name', e.target.value)} /></div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><Label>Email *</Label><Input type="email" value={f.email} onChange={(e) => set('email', e.target.value)} /></div>
+                <div><Label>Phone</Label><Input value={f.phone} onChange={(e) => set('phone', e.target.value)} /></div>
+              </div>
+              <div><Label>Password * (min 6 chars)</Label><Input type="password" value={f.password} onChange={(e) => set('password', e.target.value)} /></div>
+            </>
+          )}
+          {step === 2 && (
+            <>
+              <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Platform Branding</h3>
+              <div><Label>Platform Name *</Label><Input value={f.platformName} onChange={(e) => set('platformName', e.target.value)} /></div>
+              <div><Label>Company / Legal Name</Label><Input value={f.companyName} onChange={(e) => set('companyName', e.target.value)} /></div>
+              <div><Label>Company Address</Label><Textarea rows={2} value={f.companyAddress} onChange={(e) => set('companyAddress', e.target.value)} /></div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><Label>GST Number (optional)</Label><Input value={f.gstNumber} onChange={(e) => set('gstNumber', e.target.value)} /></div>
+                <div><Label>Invoice Prefix</Label><Input value={f.invoicePrefix} onChange={(e) => set('invoicePrefix', e.target.value)} /></div>
+              </div>
+              <div>
+                <Label>Platform Logo (optional, PNG/JPG under 500KB)</Label>
+                <Input type="file" accept="image/*" onChange={(e) => uploadImage(e, 'logoUrl')} />
+                {f.logoUrl && <img src={f.logoUrl} alt="logo" className="mt-2 h-16 border rounded" />}
+              </div>
+            </>
+          )}
+          {step === 3 && (
+            <>
+              <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Support Contact</h3>
+              <div className="grid grid-cols-2 gap-3">
+                <div><Label>Support WhatsApp</Label><Input value={f.supportWhatsapp} onChange={(e) => set('supportWhatsapp', e.target.value)} placeholder="+91-9999999999" /></div>
+                <div><Label>Support Email</Label><Input type="email" value={f.supportEmail} onChange={(e) => set('supportEmail', e.target.value)} /></div>
+                <div><Label>Support Phone</Label><Input value={f.supportPhone} onChange={(e) => set('supportPhone', e.target.value)} /></div>
+              </div>
+            </>
+          )}
+          {step === 4 && (
+            <>
+              <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Payment Receiving Details</h3>
+              <p className="text-xs text-muted-foreground">Agencies will see these on the payment page. You can change them anytime from Platform Settings.</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div><Label>Account Holder Name</Label><Input value={f.accountHolderName} onChange={(e) => set('accountHolderName', e.target.value)} /></div>
+                <div><Label>Bank Name</Label><Input value={f.bankName} onChange={(e) => set('bankName', e.target.value)} /></div>
+                <div><Label>Account Number</Label><Input value={f.accountNumber} onChange={(e) => set('accountNumber', e.target.value)} /></div>
+                <div><Label>IFSC Code</Label><Input value={f.ifscCode} onChange={(e) => set('ifscCode', e.target.value)} /></div>
+                <div className="col-span-2"><Label>UPI ID</Label><Input value={f.upiId} onChange={(e) => set('upiId', e.target.value)} placeholder="yourname@bank" /></div>
+              </div>
+              <div>
+                <Label>Payment QR Code (optional, PNG/JPG under 500KB)</Label>
+                <Input type="file" accept="image/*" onChange={(e) => uploadImage(e, 'qrCodeUrl')} />
+                {f.qrCodeUrl && <img src={f.qrCodeUrl} alt="qr" className="mt-2 h-32 border rounded" />}
+              </div>
+            </>
+          )}
+
+          <div className="flex justify-between pt-4 border-t">
+            <Button variant="ghost" disabled={step === 1} onClick={() => setStep(step - 1)}>Back</Button>
+            {step < 4 ? (
+              <Button disabled={!canNext} onClick={() => setStep(step + 1)}>Next</Button>
+            ) : (
+              <Button disabled={saving} onClick={submit}>{saving ? 'Setting up...' : 'Complete Setup'}</Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+// ============================= Super Admin Panel =============================
+function SuperAdminApp({ user, onLogout }) {
+  const [active, setActive] = useState('sadashboard')
+  const [settings, setSettings] = useState(null)
+  useEffect(() => { api('/settings/platform').then(setSettings).catch(() => {}) }, [])
+
+  const NAV = [
+    { key: 'sadashboard', label: 'Platform Dashboard', Icon: LayoutDashboard },
+    { key: 'saagencies', label: 'Agencies', Icon: Building2 },
+    { key: 'sasubs', label: 'Subscriptions', Icon: FileText },
+    { key: 'saplans', label: 'Plans', Icon: Sparkles },
+    { key: 'sapayments', label: 'Payment Settings', Icon: Wallet },
+    { key: 'sasettings', label: 'Platform Settings', Icon: ShieldCheck },
+    { key: 'sasupport', label: 'Support', Icon: Zap },
+    { key: 'saaudit', label: 'Audit Logs', Icon: BookOpen },
+  ]
+
+  return (
+    <div className="min-h-screen bg-muted/30">
+      <header className="sticky top-0 z-30 bg-background/80 backdrop-blur border-b">
+        <div className="flex items-center justify-between h-14 px-4">
+          <div className="flex items-center gap-3">
+            <Logo size={28} />
+            <Badge variant="destructive" className="uppercase text-[10px] tracking-widest">Super Admin</Badge>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="hidden md:flex flex-col items-end leading-tight">
+              <span className="text-sm font-medium">{user?.name}</span>
+              <span className="text-[10px] text-muted-foreground">Platform Administrator</span>
+            </div>
+            <ThemeToggle />
+            <Button variant="ghost" size="icon" onClick={onLogout} title="Logout"><LogOut className="h-4 w-4" /></Button>
+          </div>
+        </div>
+      </header>
+      <div className="flex">
+        <aside className="hidden md:block w-60 border-r bg-background min-h-[calc(100vh-3.5rem)] p-3 space-y-1">
+          {NAV.map(({ key, label, Icon }) => (
+            <button key={key} onClick={() => setActive(key)}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm ${active === key ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-muted'}`}>
+              <Icon className="h-4 w-4" />{label}
+            </button>
+          ))}
+        </aside>
+        <main className="flex-1 p-4 md:p-6">
+          {active === 'sadashboard' && <SuperDashboard />}
+          {active === 'saagencies' && <SuperAgencies />}
+          {active === 'sasubs' && <SuperSubscriptions />}
+          {active === 'saplans' && <SuperPlans />}
+          {active === 'sapayments' && <SuperPaymentSettings settings={settings} setSettings={setSettings} />}
+          {active === 'sasettings' && <SuperPlatformSettings settings={settings} setSettings={setSettings} />}
+          {active === 'sasupport' && <SuperSupport />}
+          {active === 'saaudit' && <SuperAudit />}
+        </main>
+      </div>
+    </div>
+  )
+}
+
+function SuperDashboard() {
+  const [d, setD] = useState(null)
+  useEffect(() => { api('/admin/dashboard').then(setD).catch((e) => toast.error(e.message)) }, [])
+  if (!d) return <div className="text-sm text-muted-foreground">Loading...</div>
+  const c = d.cards
+  return (
+    <div className="space-y-4">
+      <SectionHeader title="Platform Dashboard" subtitle="Real-time platform-wide metrics" />
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <StatCard label="Total Agencies" value={c.totalAgencies} Icon={Building2} tone="blue" />
+        <StatCard label="Free / Trial" value={c.trialAgencies} Icon={Users} />
+        <StatCard label="Paid Active" value={c.paidAgencies} Icon={Sparkles} tone="green" />
+        <StatCard label="Expired" value={c.expiredAgencies} Icon={UserX} tone="red" />
+        <StatCard label="Today's Registrations" value={c.todayRegistrations} Icon={UserCheck} tone="green" />
+        <StatCard label="Active Duties" value={c.activeDuties} Icon={ClipboardList} tone="blue" />
+        <StatCard label="Total Staff" value={c.totalStaff} Icon={Users} />
+        <StatCard label="Total Clients" value={c.totalClients} Icon={Building2} />
+        <StatCard label="Platform Revenue" value={fmtINR(c.totalRevenue)} Icon={TrendingUp} tone="green" />
+        <StatCard label="MRR (Est.)" value={fmtINR(c.mrr)} Icon={IndianRupee} tone="green" />
+        <StatCard label="Pending Approvals" value={c.pendingApprovals} Icon={Receipt} tone="amber" />
+        <StatCard label="Open Support Tickets" value={c.openTickets} Icon={Zap} tone="amber" />
+      </div>
+      <Card>
+        <CardHeader><CardTitle className="text-base">Platform Growth (Last 6 months)</CardTitle></CardHeader>
+        <CardContent className="h-72">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={d.growth}>
+              <defs>
+                <linearGradient id="ga1" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#6366F1" stopOpacity={0.6} /><stop offset="100%" stopColor="#6366F1" stopOpacity={0} /></linearGradient>
+                <linearGradient id="ga2" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#10B981" stopOpacity={0.6} /><stop offset="100%" stopColor="#10B981" stopOpacity={0} /></linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+              <XAxis dataKey="month" fontSize={12} /><YAxis fontSize={12} />
+              <Tooltip />
+              <Legend />
+              <Area type="monotone" dataKey="agencies" name="New Agencies" stroke="#6366F1" fill="url(#ga1)" />
+              <Area type="monotone" dataKey="revenue" name="Revenue" stroke="#10B981" fill="url(#ga2)" />
+            </AreaChart>
+          </ResponsiveContainer>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+function SuperAgencies() {
+  const [items, setItems] = useState([])
+  const [plans, setPlans] = useState([])
+  const [selected, setSelected] = useState(null)
+  const load = async () => { try { setItems(await api('/admin/agencies')) } catch (e) { toast.error(e.message) } }
+  useEffect(() => { load(); api('/plans').then(setPlans).catch(() => {}) }, [])
+
+  const suspend = async (id) => { if (!confirm('Suspend this agency?')) return; try { await api(`/admin/agencies/${id}/suspend`, { method: 'POST' }); toast.success('Suspended'); load() } catch (e) { toast.error(e.message) } }
+  const activate = async (id) => { try { await api(`/admin/agencies/${id}/activate`, { method: 'POST' }); toast.success('Activated'); load() } catch (e) { toast.error(e.message) } }
+  const del = async (id) => { if (!confirm('DELETE this agency and ALL its data permanently?')) return; try { await api(`/admin/agencies/${id}`, { method: 'DELETE' }); toast.success('Deleted'); load() } catch (e) { toast.error(e.message) } }
+  const resetPw = async (id) => { const p = prompt('New password (min 6 chars):'); if (!p || p.length < 6) return; try { await api(`/admin/agencies/${id}/reset-password`, { method: 'POST', body: JSON.stringify({ newPassword: p }) }); toast.success('Password reset') } catch (e) { toast.error(e.message) } }
+  const loginAs = async (id) => {
+    if (!confirm('Impersonate this agency? Your session will be replaced.')) return
+    try {
+      const r = await api(`/admin/agencies/${id}/login-as`, { method: 'POST' })
+      setToken(r.token)
+      toast.success('Impersonating...'); window.location.reload()
+    } catch (e) { toast.error(e.message) }
+  }
+  const changePlan = async (id, planId) => {
+    try { await api(`/admin/agencies/${id}/change-plan`, { method: 'POST', body: JSON.stringify({ planId, billingCycle: 'monthly' }) }); toast.success('Plan changed'); load() } catch (e) { toast.error(e.message) }
+  }
+
+  return (
+    <div>
+      <SectionHeader title="Agencies" subtitle="Every registered agency on the platform" />
+      <Card>
+        <CardContent className="p-0 overflow-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+              <tr>
+                <th className="text-left p-3">Agency</th>
+                <th className="text-left p-3">Owner</th>
+                <th className="text-left p-3">Phone</th>
+                <th className="text-left p-3">Plan</th>
+                <th className="text-left p-3">Expiry</th>
+                <th className="text-right p-3">Staff</th>
+                <th className="text-right p-3">Clients</th>
+                <th className="text-right p-3">Duties</th>
+                <th className="text-right p-3">Paid Total</th>
+                <th className="text-left p-3">Status</th>
+                <th className="text-right p-3">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.length === 0 && <tr><td colSpan={11} className="p-8 text-center text-muted-foreground">No agencies yet.</td></tr>}
+              {items.map((a) => (
+                <tr key={a.id} className="border-t hover:bg-muted/30">
+                  <td className="p-3 font-medium">{a.name}<div className="text-xs text-muted-foreground">{a.businessType}</div></td>
+                  <td className="p-3 text-xs">{a.ownerName}<div className="text-muted-foreground">{a.ownerEmail}</div></td>
+                  <td className="p-3 text-xs">{a.phone}</td>
+                  <td className="p-3"><Badge variant={a.plan === 'FREE' ? 'outline' : 'default'}>{a.plan}</Badge></td>
+                  <td className="p-3 text-xs">{a.expiryDate || '—'}</td>
+                  <td className="p-3 text-right">{a.staffCount}</td>
+                  <td className="p-3 text-right">{a.clientCount}</td>
+                  <td className="p-3 text-right">{a.activePlacements}</td>
+                  <td className="p-3 text-right">{fmtINR(a.totalPaid)}</td>
+                  <td className="p-3"><Badge variant={a.status === 'suspended' ? 'destructive' : 'secondary'}>{a.status}</Badge></td>
+                  <td className="p-3 text-right whitespace-nowrap">
+                    <Button size="sm" variant="outline" onClick={() => setSelected(a)}>Manage</Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+
+      <Dialog open={!!selected} onOpenChange={(o) => { if (!o) setSelected(null) }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader><DialogTitle>{selected?.name}</DialogTitle><DialogDescription>Manage agency lifecycle & plan</DialogDescription></DialogHeader>
+          {selected && (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <div><span className="text-muted-foreground">Owner:</span> {selected.ownerName}</div>
+                <div><span className="text-muted-foreground">Email:</span> {selected.ownerEmail}</div>
+                <div><span className="text-muted-foreground">Phone:</span> {selected.phone}</div>
+                <div><span className="text-muted-foreground">Plan:</span> {selected.plan}</div>
+                <div><span className="text-muted-foreground">Expiry:</span> {selected.expiryDate || '—'}</div>
+                <div><span className="text-muted-foreground">Status:</span> {selected.status}</div>
+              </div>
+              <div>
+                <Label>Change Plan</Label>
+                <Select onValueChange={(pid) => { changePlan(selected.id, pid); setSelected(null) }}>
+                  <SelectTrigger><SelectValue placeholder="Select plan" /></SelectTrigger>
+                  <SelectContent>{plans.map((p) => <SelectItem key={p.id} value={p.id}>{p.name} · ₹{p.monthlyPrice}/mo</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+              <div className="flex flex-wrap gap-2 pt-2 border-t">
+                <Button size="sm" variant="outline" onClick={() => loginAs(selected.id)}>Login as Agency</Button>
+                <Button size="sm" variant="outline" onClick={() => resetPw(selected.id)}>Reset Password</Button>
+                {selected.status === 'suspended'
+                  ? <Button size="sm" onClick={() => { activate(selected.id); setSelected(null) }}>Activate</Button>
+                  : <Button size="sm" variant="secondary" onClick={() => { suspend(selected.id); setSelected(null) }}>Suspend</Button>}
+                <Button size="sm" variant="destructive" onClick={() => { del(selected.id); setSelected(null) }}>Delete</Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
+
+function SuperSubscriptions() {
+  const [items, setItems] = useState([])
+  const [filter, setFilter] = useState('pending')
+  const [viewing, setViewing] = useState(null)
+  const load = async () => { try { const qs = filter === 'all' ? '' : `?status=${filter}`; setItems(await api(`/admin/payment-requests${qs}`)) } catch (e) { toast.error(e.message) } }
+  useEffect(() => { load() }, [filter])
+  const act = async (id, action, note = '') => {
+    try {
+      await api(`/admin/payment-requests/${id}/${action}`, { method: 'POST', body: JSON.stringify({ note }) })
+      toast.success(action === 'approve' ? 'Approved & receipt generated' : action)
+      load()
+    } catch (e) { toast.error(e.message) }
+  }
+  return (
+    <div>
+      <SectionHeader
+        title="Subscription Requests"
+        subtitle="Approve, reject or request more information on payment submissions"
+        action={
+          <Select value={filter} onValueChange={setFilter}>
+            <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All</SelectItem>
+              <SelectItem value="pending">Pending</SelectItem>
+              <SelectItem value="approved">Approved</SelectItem>
+              <SelectItem value="rejected">Rejected</SelectItem>
+              <SelectItem value="more_info">More Info Requested</SelectItem>
+            </SelectContent>
+          </Select>
+        }
+      />
+      <Card>
+        <CardContent className="p-0 overflow-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+              <tr>
+                <th className="text-left p-3">Agency</th>
+                <th className="text-left p-3">Owner</th>
+                <th className="text-left p-3">Plan</th>
+                <th className="text-right p-3">Amount</th>
+                <th className="text-left p-3">UTR</th>
+                <th className="text-left p-3">Date</th>
+                <th className="text-left p-3">Status</th>
+                <th className="text-right p-3">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.length === 0 && <tr><td colSpan={8} className="p-8 text-center text-muted-foreground">No requests.</td></tr>}
+              {items.map((r) => (
+                <tr key={r.id} className="border-t hover:bg-muted/30">
+                  <td className="p-3 font-medium">{r.agencyName}</td>
+                  <td className="p-3 text-xs">{r.ownerName}<div className="text-muted-foreground">{r.phone}</div></td>
+                  <td className="p-3"><Badge>{r.planName}</Badge> <span className="text-xs text-muted-foreground">{r.billingCycle}</span></td>
+                  <td className="p-3 text-right">{fmtINR(r.amount)}</td>
+                  <td className="p-3 font-mono text-xs">{r.utrNumber}</td>
+                  <td className="p-3 text-xs">{r.transactionDate}</td>
+                  <td className="p-3"><Badge variant={r.status === 'approved' ? 'default' : r.status === 'rejected' ? 'destructive' : 'secondary'}>{r.status}</Badge></td>
+                  <td className="p-3 text-right whitespace-nowrap">
+                    <Button size="sm" variant="outline" onClick={() => setViewing(r)}>View</Button>
+                    {r.status === 'pending' && (
+                      <>
+                        <Button size="sm" className="ml-1" onClick={() => act(r.id, 'approve')}>Approve</Button>
+                        <Button size="sm" variant="destructive" className="ml-1" onClick={() => { const n = prompt('Reason?'); if (n !== null) act(r.id, 'reject', n) }}>Reject</Button>
+                      </>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+      <Dialog open={!!viewing} onOpenChange={(o) => !o && setViewing(null)}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>Payment Request Details</DialogTitle></DialogHeader>
+          {viewing && (
+            <div className="space-y-3 text-sm">
+              <div className="grid grid-cols-2 gap-2">
+                <div><span className="text-muted-foreground">Agency:</span> {viewing.agencyName}</div>
+                <div><span className="text-muted-foreground">Owner:</span> {viewing.ownerName}</div>
+                <div><span className="text-muted-foreground">Phone:</span> {viewing.phone}</div>
+                <div><span className="text-muted-foreground">Email:</span> {viewing.email}</div>
+                <div><span className="text-muted-foreground">Plan:</span> {viewing.planName}</div>
+                <div><span className="text-muted-foreground">Cycle:</span> {viewing.billingCycle}</div>
+                <div><span className="text-muted-foreground">Amount:</span> {fmtINR(viewing.amount)}</div>
+                <div><span className="text-muted-foreground">UTR:</span> {viewing.utrNumber}</div>
+                <div><span className="text-muted-foreground">Date:</span> {viewing.transactionDate}</div>
+                <div><span className="text-muted-foreground">Status:</span> {viewing.status}</div>
+              </div>
+              {viewing.remarks && <div><span className="text-muted-foreground">Remarks:</span> {viewing.remarks}</div>}
+              {viewing.superAdminNote && <div className="p-2 bg-amber-500/10 border border-amber-500/30 rounded text-amber-800 dark:text-amber-200"><b>Admin note:</b> {viewing.superAdminNote}</div>}
+              {viewing.screenshotUrl && (
+                <div><div className="text-xs text-muted-foreground mb-1">Payment Screenshot</div><img src={viewing.screenshotUrl} alt="proof" className="max-h-96 border rounded" /></div>
+              )}
+              {viewing.status === 'pending' && (
+                <div className="flex gap-2 pt-2 border-t">
+                  <Button onClick={() => { act(viewing.id, 'approve'); setViewing(null) }}>Approve & Activate</Button>
+                  <Button variant="destructive" onClick={() => { const n = prompt('Reason?'); if (n !== null) { act(viewing.id, 'reject', n); setViewing(null) } }}>Reject</Button>
+                  <Button variant="outline" onClick={() => { const n = prompt('What info needed?'); if (n !== null) { act(viewing.id, 'request-info', n); setViewing(null) } }}>Request Info</Button>
+                </div>
+              )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
+
+function SuperPlans() {
+  const [items, setItems] = useState([])
+  const [open, setOpen] = useState(false)
+  const [editing, setEditing] = useState(null)
+  const load = async () => { try { setItems(await api('/plans')) } catch (e) { toast.error(e.message) } }
+  useEffect(() => { load() }, [])
+  const remove = async (id) => { if (!confirm('Delete plan?')) return; try { await api(`/plans/${id}`, { method: 'DELETE' }); load() } catch (e) { toast.error(e.message) } }
+  return (
+    <div>
+      <SectionHeader title="Subscription Plans" subtitle="Manage plans agencies can purchase" action={<Button onClick={() => { setEditing(null); setOpen(true) }} className="gap-1"><Plus className="h-4 w-4" /> Add Plan</Button>} />
+      <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+        {items.map((p) => (
+          <Card key={p.id} className={p.recommended ? 'border-primary' : ''}>
+            <CardHeader>
+              <div className="flex items-start justify-between">
+                <div>
+                  <CardTitle className="text-lg">{p.name}</CardTitle>
+                  <CardDescription>{p.code}</CardDescription>
+                </div>
+                {p.recommended && <Badge>Recommended</Badge>}
+              </div>
+              <div className="text-2xl font-bold">{fmtINR(p.monthlyPrice)}<span className="text-xs text-muted-foreground">/month</span></div>
+              <div className="text-xs text-muted-foreground">{fmtINR(p.yearlyPrice)}/year</div>
+            </CardHeader>
+            <CardContent className="space-y-1 text-sm">
+              <div>Staff: <b>{p.maxStaff}</b></div>
+              <div>Clients: <b>{p.maxClients}</b></div>
+              <div>Vendors: <b>{p.maxVendors}</b></div>
+              <div>Branches: <b>{p.maxBranches}</b></div>
+              <div className="pt-2 flex flex-wrap gap-1">
+                {(p.features || []).map((f, i) => <Badge key={i} variant="outline" className="text-xs">{f}</Badge>)}
+              </div>
+              <div className="pt-3 flex gap-2 border-t mt-3">
+                <Button size="sm" variant="outline" onClick={() => { setEditing(p); setOpen(true) }}><Edit3 className="h-3 w-3" /></Button>
+                <Button size="sm" variant="ghost" onClick={() => remove(p.id)}><Trash2 className="h-3 w-3" /></Button>
+                <Badge variant={p.active ? 'secondary' : 'outline'} className="ml-auto">{p.active ? 'Active' : 'Inactive'}</Badge>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+      <PlanForm open={open} onOpenChange={setOpen} initial={editing} onSaved={() => { setOpen(false); load() }} />
+    </div>
+  )
+}
+function PlanForm({ open, onOpenChange, initial, onSaved }) {
+  const [f, setF] = useState({})
+  useEffect(() => {
+    setF(initial ? { ...initial, features: (initial.features || []).join(', ') } :
+      { code: '', name: '', monthlyPrice: 0, yearlyPrice: 0, maxStaff: 10, maxClients: 10, maxVendors: 10, maxBranches: 1, storageGB: 5, features: '', description: '', recommended: false, active: true })
+  }, [initial, open])
+  const submit = async (e) => {
+    e.preventDefault()
+    try {
+      if (initial) await api(`/plans/${initial.id}`, { method: 'PUT', body: JSON.stringify(f) })
+      else await api('/plans', { method: 'POST', body: JSON.stringify(f) })
+      toast.success('Saved'); onSaved()
+    } catch (e) { toast.error(e.message) }
+  }
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-xl">
+        <DialogHeader><DialogTitle>{initial ? 'Edit Plan' : 'New Plan'}</DialogTitle></DialogHeader>
+        <form onSubmit={submit} className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div><Label>Code *</Label><Input required value={f.code || ''} onChange={(e) => setF({ ...f, code: e.target.value.toUpperCase() })} /></div>
+            <div><Label>Name *</Label><Input required value={f.name || ''} onChange={(e) => setF({ ...f, name: e.target.value })} /></div>
+            <div><Label>Monthly ₹</Label><Input type="number" value={f.monthlyPrice || 0} onChange={(e) => setF({ ...f, monthlyPrice: e.target.value })} /></div>
+            <div><Label>Yearly ₹</Label><Input type="number" value={f.yearlyPrice || 0} onChange={(e) => setF({ ...f, yearlyPrice: e.target.value })} /></div>
+            <div><Label>Max Staff</Label><Input type="number" value={f.maxStaff || 0} onChange={(e) => setF({ ...f, maxStaff: e.target.value })} /></div>
+            <div><Label>Max Clients</Label><Input type="number" value={f.maxClients || 0} onChange={(e) => setF({ ...f, maxClients: e.target.value })} /></div>
+            <div><Label>Max Vendors</Label><Input type="number" value={f.maxVendors || 0} onChange={(e) => setF({ ...f, maxVendors: e.target.value })} /></div>
+            <div><Label>Max Branches</Label><Input type="number" value={f.maxBranches || 0} onChange={(e) => setF({ ...f, maxBranches: e.target.value })} /></div>
+            <div className="col-span-2"><Label>Description</Label><Input value={f.description || ''} onChange={(e) => setF({ ...f, description: e.target.value })} /></div>
+            <div className="col-span-2"><Label>Features (comma separated)</Label><Textarea rows={2} value={f.features || ''} onChange={(e) => setF({ ...f, features: e.target.value })} /></div>
+            <div className="flex items-center gap-2"><input type="checkbox" checked={!!f.recommended} onChange={(e) => setF({ ...f, recommended: e.target.checked })} /> Recommended</div>
+            <div className="flex items-center gap-2"><input type="checkbox" checked={f.active !== false} onChange={(e) => setF({ ...f, active: e.target.checked })} /> Active</div>
+          </div>
+          <DialogFooter><Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button><Button type="submit">Save</Button></DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function SuperPaymentSettings({ settings, setSettings }) {
+  const [f, setF] = useState({})
+  const [saving, setSaving] = useState(false)
+  useEffect(() => { setF(settings || {}) }, [settings])
+  const upload = (e, k) => {
+    const file = e.target.files?.[0]; if (!file) return
+    if (file.size > 500 * 1024) return toast.error('Image must be under 500KB')
+    const r = new FileReader(); r.onload = () => setF({ ...f, [k]: r.result }); r.readAsDataURL(file)
+  }
+  const save = async () => {
+    setSaving(true)
+    try { const s = await api('/settings/platform', { method: 'PUT', body: JSON.stringify(f) }); setSettings(s); toast.success('Saved') } catch (e) { toast.error(e.message) } finally { setSaving(false) }
+  }
+  return (
+    <div>
+      <SectionHeader title="Payment Settings" subtitle="Bank / UPI details shown to agencies on the payment page" action={<Button disabled={saving} onClick={save}>{saving ? 'Saving...' : 'Save Changes'}</Button>} />
+      <Card>
+        <CardContent className="p-6 space-y-4">
+          <div className="grid md:grid-cols-2 gap-4">
+            <div><Label>Account Holder Name</Label><Input value={f.accountHolderName || ''} onChange={(e) => setF({ ...f, accountHolderName: e.target.value })} /></div>
+            <div><Label>Bank Name</Label><Input value={f.bankName || ''} onChange={(e) => setF({ ...f, bankName: e.target.value })} /></div>
+            <div><Label>Account Number</Label><Input value={f.accountNumber || ''} onChange={(e) => setF({ ...f, accountNumber: e.target.value })} /></div>
+            <div><Label>IFSC Code</Label><Input value={f.ifscCode || ''} onChange={(e) => setF({ ...f, ifscCode: e.target.value })} /></div>
+            <div className="md:col-span-2"><Label>UPI ID</Label><Input value={f.upiId || ''} onChange={(e) => setF({ ...f, upiId: e.target.value })} /></div>
+            <div className="md:col-span-2">
+              <Label>QR Code (PNG/JPG under 500KB)</Label>
+              <Input type="file" accept="image/*" onChange={(e) => upload(e, 'qrCodeUrl')} />
+              {f.qrCodeUrl && <img src={f.qrCodeUrl} alt="qr" className="mt-2 h-40 border rounded" />}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+function SuperPlatformSettings({ settings, setSettings }) {
+  const [f, setF] = useState({})
+  const [saving, setSaving] = useState(false)
+  useEffect(() => { setF(settings || {}) }, [settings])
+  const upload = (e, k) => {
+    const file = e.target.files?.[0]; if (!file) return
+    if (file.size > 500 * 1024) return toast.error('Image must be under 500KB')
+    const r = new FileReader(); r.onload = () => setF({ ...f, [k]: r.result }); r.readAsDataURL(file)
+  }
+  const save = async () => {
+    setSaving(true)
+    try { const s = await api('/settings/platform', { method: 'PUT', body: JSON.stringify(f) }); setSettings(s); toast.success('Saved') } catch (e) { toast.error(e.message) } finally { setSaving(false) }
+  }
+  return (
+    <div>
+      <SectionHeader title="Platform Settings" subtitle="Every value on this page is editable — no hardcoded config in code" action={<Button disabled={saving} onClick={save}>{saving ? 'Saving...' : 'Save Changes'}</Button>} />
+      <Card>
+        <CardContent className="p-6 space-y-4">
+          <h3 className="text-sm font-semibold uppercase text-muted-foreground">Branding</h3>
+          <div className="grid md:grid-cols-2 gap-3">
+            <div><Label>Platform Name</Label><Input value={f.platformName || ''} onChange={(e) => setF({ ...f, platformName: e.target.value })} /></div>
+            <div><Label>Company Name</Label><Input value={f.companyName || ''} onChange={(e) => setF({ ...f, companyName: e.target.value })} /></div>
+            <div className="md:col-span-2"><Label>Company Address</Label><Textarea rows={2} value={f.companyAddress || ''} onChange={(e) => setF({ ...f, companyAddress: e.target.value })} /></div>
+            <div><Label>GST Number</Label><Input value={f.gstNumber || ''} onChange={(e) => setF({ ...f, gstNumber: e.target.value })} /></div>
+            <div><Label>Currency</Label><Input value={f.currency || 'INR'} onChange={(e) => setF({ ...f, currency: e.target.value })} /></div>
+            <div><Label>Tax %</Label><Input type="number" value={f.taxPercentage || 0} onChange={(e) => setF({ ...f, taxPercentage: e.target.value })} /></div>
+            <div><Label>Invoice Prefix</Label><Input value={f.invoicePrefix || 'INV'} onChange={(e) => setF({ ...f, invoicePrefix: e.target.value })} /></div>
+            <div><Label>Receipt Prefix</Label><Input value={f.receiptPrefix || 'RCP'} onChange={(e) => setF({ ...f, receiptPrefix: e.target.value })} /></div>
+            <div>
+              <Label>Logo</Label>
+              <Input type="file" accept="image/*" onChange={(e) => upload(e, 'logoUrl')} />
+              {f.logoUrl && <img src={f.logoUrl} alt="logo" className="mt-2 h-16 border rounded" />}
+            </div>
+          </div>
+          <h3 className="text-sm font-semibold uppercase text-muted-foreground pt-3 border-t">Support Contact</h3>
+          <div className="grid md:grid-cols-3 gap-3">
+            <div><Label>WhatsApp</Label><Input value={f.supportWhatsapp || ''} onChange={(e) => setF({ ...f, supportWhatsapp: e.target.value })} /></div>
+            <div><Label>Email</Label><Input value={f.supportEmail || ''} onChange={(e) => setF({ ...f, supportEmail: e.target.value })} /></div>
+            <div><Label>Phone</Label><Input value={f.supportPhone || ''} onChange={(e) => setF({ ...f, supportPhone: e.target.value })} /></div>
+            <div className="md:col-span-3"><Label>Default WhatsApp Message</Label><Input value={f.defaultMessage || ''} onChange={(e) => setF({ ...f, defaultMessage: e.target.value })} /></div>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+function SuperSupport() {
+  const [items, setItems] = useState([])
+  const [viewing, setViewing] = useState(null)
+  const load = async () => { try { setItems(await api('/support/tickets')) } catch (e) { toast.error(e.message) } }
+  useEffect(() => { load() }, [])
+  const reply = async () => {
+    const msg = prompt('Reply message:'); if (!msg) return
+    try { await api(`/support/tickets/${viewing.id}/reply`, { method: 'POST', body: JSON.stringify({ message: msg }) }); toast.success('Sent'); load(); setViewing(null) } catch (e) { toast.error(e.message) }
+  }
+  const setStatus = async (id, status) => { try { await api(`/support/tickets/${id}`, { method: 'PUT', body: JSON.stringify({ status }) }); load() } catch (e) { toast.error(e.message) } }
+  return (
+    <div>
+      <SectionHeader title="Support Tickets" subtitle="All tickets across agencies" />
+      <Card>
+        <CardContent className="p-0 overflow-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+              <tr><th className="text-left p-3">Code</th><th className="text-left p-3">Agency</th><th className="text-left p-3">Subject</th><th className="text-left p-3">Priority</th><th className="text-left p-3">Status</th><th className="text-right p-3">Created</th><th></th></tr>
+            </thead>
+            <tbody>
+              {items.length === 0 && <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">No tickets.</td></tr>}
+              {items.map((t) => (
+                <tr key={t.id} className="border-t hover:bg-muted/30">
+                  <td className="p-3 font-mono text-xs">{t.code}</td>
+                  <td className="p-3">{t.agencyName}</td>
+                  <td className="p-3 font-medium">{t.subject}</td>
+                  <td className="p-3"><Badge variant="outline">{t.priority}</Badge></td>
+                  <td className="p-3">
+                    <Select value={t.status} onValueChange={(v) => setStatus(t.id, v)}>
+                      <SelectTrigger className="h-7 w-32"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="open">Open</SelectItem>
+                        <SelectItem value="in_progress">In Progress</SelectItem>
+                        <SelectItem value="resolved">Resolved</SelectItem>
+                        <SelectItem value="closed">Closed</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </td>
+                  <td className="p-3 text-right text-xs">{new Date(t.createdAt).toLocaleString()}</td>
+                  <td className="p-3 text-right"><Button size="sm" variant="outline" onClick={() => setViewing(t)}>View</Button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+      <Dialog open={!!viewing} onOpenChange={(o) => !o && setViewing(null)}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>{viewing?.subject}</DialogTitle><DialogDescription>{viewing?.code} · {viewing?.agencyName}</DialogDescription></DialogHeader>
+          {viewing && (
+            <div className="space-y-3 text-sm">
+              <div className="p-3 bg-muted rounded">{viewing.message}</div>
+              {(viewing.replies || []).map((r) => (
+                <div key={r.id} className="p-3 border rounded">
+                  <div className="text-xs text-muted-foreground">{r.by} ({r.role}) · {new Date(r.at).toLocaleString()}</div>
+                  <div>{r.message}</div>
+                </div>
+              ))}
+              <div className="flex gap-2"><Button onClick={reply}>Add Reply</Button></div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
+
+function SuperAudit() {
+  const [items, setItems] = useState([])
+  useEffect(() => { api('/admin/audit').then(setItems).catch((e) => toast.error(e.message)) }, [])
+  return (
+    <div>
+      <SectionHeader title="Audit Log" subtitle="All privileged super admin actions" />
+      <Card>
+        <CardContent className="p-0">
+          <ul className="divide-y">
+            {items.length === 0 && <li className="p-6 text-center text-muted-foreground text-sm">No audit entries.</li>}
+            {items.map((a) => (
+              <li key={a.id} className="p-3 flex items-start gap-3 text-sm">
+                <div className="h-2 w-2 rounded-full bg-primary mt-1.5" />
+                <div className="flex-1">
+                  <div>{a.message}</div>
+                  <div className="text-xs text-muted-foreground">{new Date(a.createdAt).toLocaleString()} · actor:{String(a.actorUserId).slice(0, 8)}</div>
+                </div>
+                <Badge variant="outline" className="text-xs">{a.action}</Badge>
+              </li>
+            ))}
+          </ul>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+// ============================= Agency Subscription Module =============================
+function SubscriptionModule() {
+  const [data, setData] = useState(null)
+  const [plans, setPlans] = useState([])
+  const [payOpen, setPayOpen] = useState(false)
+  const [chosenPlan, setChosenPlan] = useState(null)
+  const load = async () => { try { setData(await api('/subscription/me')) } catch (e) { toast.error(e.message) } }
+  useEffect(() => { load(); api('/subscription/plans').then(setPlans).catch(() => {}) }, [])
+  if (!data) return <div className="text-sm text-muted-foreground">Loading...</div>
+  const { agency, usage, requests, receipts } = data
+  const currentPlanCode = agency?.plan || 'FREE'
+
+  return (
+    <div className="space-y-6">
+      <SectionHeader title="Subscription & Billing" subtitle="Your plan, limits and upgrade options" />
+
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <CardTitle>Current Plan · {agency?.plan}</CardTitle>
+              <CardDescription>Status: {agency?.status} {agency?.expiryDate && `· Expires ${agency.expiryDate}`}</CardDescription>
+            </div>
+            <Badge variant={agency?.plan === 'FREE' ? 'outline' : 'default'} className="uppercase">{agency?.plan}</Badge>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-3 gap-3 text-sm">
+            <div><div className="text-xs text-muted-foreground">Staff usage</div><div className="font-bold">{usage.staffCount} / {agency?.limits?.maxStaff}</div></div>
+            <div><div className="text-xs text-muted-foreground">Clients usage</div><div className="font-bold">{usage.clientCount} / {agency?.limits?.maxClients}</div></div>
+            <div><div className="text-xs text-muted-foreground">Vendors usage</div><div className="font-bold">{usage.vendorCount} / {agency?.limits?.maxVendors}</div></div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div>
+        <h2 className="text-lg font-semibold mb-3">Available Plans</h2>
+        <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+          {plans.map((p) => (
+            <Card key={p.id} className={p.recommended ? 'border-primary shadow-lg' : ''}>
+              <CardHeader>
+                <div className="flex items-start justify-between">
+                  <CardTitle>{p.name}</CardTitle>
+                  {p.recommended && <Badge>Popular</Badge>}
+                </div>
+                <div className="text-3xl font-bold">{fmtINR(p.monthlyPrice)}<span className="text-xs text-muted-foreground">/mo</span></div>
+                <div className="text-xs text-muted-foreground">or {fmtINR(p.yearlyPrice)}/year</div>
+              </CardHeader>
+              <CardContent className="space-y-2 text-sm">
+                <div className="space-y-1">
+                  <div>✓ {p.maxStaff} Staff</div>
+                  <div>✓ {p.maxClients} Clients</div>
+                  <div>✓ {p.maxVendors} Vendors</div>
+                  <div>✓ {p.maxBranches} Branch{p.maxBranches > 1 ? 'es' : ''}</div>
+                  {(p.features || []).map((f, i) => <div key={i}>✓ {f}</div>)}
+                </div>
+                <Button className="w-full mt-3"
+                  disabled={p.code === currentPlanCode}
+                  onClick={() => { setChosenPlan(p); setPayOpen(true) }}>
+                  {p.code === currentPlanCode ? 'Current plan' : (p.monthlyPrice === 0 ? 'Free' : 'Upgrade')}
+                </Button>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      </div>
+
+      <Card>
+        <CardHeader><CardTitle className="text-base">Payment History</CardTitle></CardHeader>
+        <CardContent className="p-0 overflow-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+              <tr><th className="text-left p-3">Plan</th><th className="text-right p-3">Amount</th><th className="text-left p-3">UTR</th><th className="text-left p-3">Date</th><th className="text-left p-3">Status</th><th className="text-right p-3">Receipt</th></tr>
+            </thead>
+            <tbody>
+              {requests.length === 0 && <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">No payments yet.</td></tr>}
+              {requests.map((r) => {
+                const receipt = receipts.find((rc) => rc.paymentRequestId === r.id)
+                return (
+                  <tr key={r.id} className="border-t">
+                    <td className="p-3">{r.planName}</td>
+                    <td className="p-3 text-right">{fmtINR(r.amount)}</td>
+                    <td className="p-3 font-mono text-xs">{r.utrNumber}</td>
+                    <td className="p-3 text-xs">{r.transactionDate}</td>
+                    <td className="p-3"><Badge variant={r.status === 'approved' ? 'default' : r.status === 'rejected' ? 'destructive' : 'secondary'}>{r.status}</Badge>{r.superAdminNote && <div className="text-xs mt-1 text-muted-foreground">{r.superAdminNote}</div>}</td>
+                    <td className="p-3 text-right">
+                      {receipt && <Button size="sm" variant="outline" className="gap-1" onClick={() => printHTML(`Receipt ${receipt.number}`, receiptHTML(receipt))}><Printer className="h-3 w-3" /> {receipt.number}</Button>}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+
+      <PaymentRequestDialog open={payOpen} onOpenChange={setPayOpen} plan={chosenPlan} onSaved={() => { setPayOpen(false); load() }} />
+    </div>
+  )
+}
+
+function receiptHTML(r) {
+  const s = r.snapshot || {}
+  return `<div class="head"><div><div class="brand">${s.platformName || 'DutyOnTrack'}</div><div class="muted">${s.companyName || ''}<br/>${s.companyAddress || ''}<br/>${s.gstNumber ? 'GST: ' + s.gstNumber : ''}</div></div>
+  <div style="text-align:right"><div style="font-size:18px;font-weight:700">PAYMENT RECEIPT</div><div>${r.number}</div><div class="muted">Issued: ${new Date(r.createdAt).toLocaleDateString()}</div></div></div>
+  <div class="grid">
+    <div class="box"><b>Received From</b><br/>${s.agencyName || ''}<br/>${s.agencyPhone || ''}<br/>${s.agencyAddress || ''}</div>
+    <div class="box"><b>Subscription</b><br/>Plan: ${r.planName}<br/>Cycle: ${r.billingCycle}<br/>Activated: ${r.activatedOn}<br/>Expires: ${r.expiryDate}</div>
+  </div>
+  <table>
+    <tr><th>Description</th><th class="right">Amount (₹)</th></tr>
+    <tr><td>${r.planName} subscription (${r.billingCycle}) — Method: ${r.method}, UTR: ${r.utrNumber}</td><td class="right">${r.amount.toLocaleString('en-IN')}</td></tr>
+    <tr class="total"><td>Total Received</td><td class="right">₹${r.amount.toLocaleString('en-IN')}</td></tr>
+  </table>
+  <div style="margin-top:24px;font-size:11px;color:#666">This is a system-generated receipt.</div>`
+}
+
+function PaymentRequestDialog({ open, onOpenChange, plan, onSaved }) {
+  const [settings, setSettings] = useState(null)
+  const [cycle, setCycle] = useState('monthly')
+  const [f, setF] = useState({ utrNumber: '', amount: 0, transactionDate: new Date().toISOString().slice(0, 10), remarks: '', screenshotUrl: '' })
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => { if (open) { api('/settings/public').then(setSettings).catch(() => {}); setF({ utrNumber: '', amount: plan?.monthlyPrice || 0, transactionDate: new Date().toISOString().slice(0, 10), remarks: '', screenshotUrl: '' }); setCycle('monthly') } }, [open, plan])
+  useEffect(() => { if (plan) setF((p) => ({ ...p, amount: cycle === 'yearly' ? plan.yearlyPrice : plan.monthlyPrice })) }, [cycle, plan])
+
+  const uploadShot = (e) => {
+    const file = e.target.files?.[0]; if (!file) return
+    if (file.size > 1024 * 1024) return toast.error('Screenshot must be under 1MB')
+    const r = new FileReader(); r.onload = () => setF({ ...f, screenshotUrl: r.result }); r.readAsDataURL(file)
+  }
+  const submit = async (e) => {
+    e.preventDefault()
+    if (!f.utrNumber) return toast.error('UTR number is required')
+    if (!f.screenshotUrl) return toast.error('Please upload payment screenshot')
+    setSaving(true)
+    try {
+      await api('/subscription/request', { method: 'POST', body: JSON.stringify({ planId: plan.id, amount: f.amount, utrNumber: f.utrNumber, screenshotUrl: f.screenshotUrl, transactionDate: f.transactionDate, remarks: f.remarks, billingCycle: cycle }) })
+      toast.success('Payment submitted. Super admin will verify shortly.')
+      onSaved()
+    } catch (e) { toast.error(e.message) } finally { setSaving(false) }
+  }
+  if (!plan) return null
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Upgrade to {plan.name}</DialogTitle>
+          <DialogDescription>Pay via UPI or Bank Transfer using the details below, then submit your UTR and screenshot for approval.</DialogDescription>
+        </DialogHeader>
+        <div className="grid md:grid-cols-2 gap-4">
+          <div className="space-y-3">
+            <div className="rounded-lg border p-3">
+              <div className="text-xs uppercase text-muted-foreground mb-2">Payment Details</div>
+              {settings ? (
+                <div className="space-y-1 text-sm">
+                  <div><b>Account Holder:</b> {settings.accountHolderName || '—'}</div>
+                  <div><b>Bank:</b> {settings.bankName || '—'}</div>
+                  <div><b>A/c No.:</b> {settings.accountNumber || '—'}</div>
+                  <div><b>IFSC:</b> {settings.ifscCode || '—'}</div>
+                  <div><b>UPI:</b> {settings.upiId || '—'}</div>
+                  {settings.qrCodeUrl && <img src={settings.qrCodeUrl} alt="qr" className="mt-2 h-40 border rounded" />}
+                  {(settings.supportWhatsapp || settings.supportEmail) && <div className="pt-2 text-xs text-muted-foreground border-t mt-2">Need help? {settings.supportWhatsapp && `WhatsApp ${settings.supportWhatsapp}`} {settings.supportEmail && `· ${settings.supportEmail}`}</div>}
+                </div>
+              ) : <div className="text-sm text-muted-foreground">Loading settings...</div>}
+            </div>
+            <div className="rounded-lg border p-3">
+              <div className="text-xs uppercase text-muted-foreground mb-2">Billing</div>
+              <div className="flex gap-2 mb-2">
+                <button type="button" className={`px-3 py-1.5 text-xs rounded border ${cycle === 'monthly' ? 'bg-primary text-primary-foreground' : ''}`} onClick={() => setCycle('monthly')}>Monthly {fmtINR(plan.monthlyPrice)}</button>
+                <button type="button" className={`px-3 py-1.5 text-xs rounded border ${cycle === 'yearly' ? 'bg-primary text-primary-foreground' : ''}`} onClick={() => setCycle('yearly')}>Yearly {fmtINR(plan.yearlyPrice)}</button>
+              </div>
+              <div className="text-2xl font-bold">{fmtINR(f.amount)}</div>
+              <div className="text-xs text-muted-foreground">Includes {plan.maxStaff} staff, {plan.maxClients} clients, {plan.maxVendors} vendors</div>
+            </div>
+          </div>
+          <form onSubmit={submit} className="space-y-3">
+            <div><Label>UTR / Transaction Reference *</Label><Input required value={f.utrNumber} onChange={(e) => setF({ ...f, utrNumber: e.target.value })} placeholder="e.g., 328941229384" /></div>
+            <div><Label>Amount Paid (₹) *</Label><Input required type="number" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} /></div>
+            <div><Label>Transaction Date *</Label><Input required type="date" value={f.transactionDate} onChange={(e) => setF({ ...f, transactionDate: e.target.value })} /></div>
+            <div><Label>Payment Screenshot * (under 1MB)</Label><Input required type="file" accept="image/*" onChange={uploadShot} />{f.screenshotUrl && <img src={f.screenshotUrl} alt="proof" className="mt-2 h-32 border rounded" />}</div>
+            <div><Label>Remarks</Label><Textarea rows={2} value={f.remarks} onChange={(e) => setF({ ...f, remarks: e.target.value })} /></div>
+            <Button type="submit" disabled={saving} className="w-full">{saving ? 'Submitting...' : 'Submit for Approval'}</Button>
+          </form>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ============================= Agency Support =============================
+function AgencySupport() {
+  const [items, setItems] = useState([])
+  const [settings, setSettings] = useState(null)
+  const [open, setOpen] = useState(false)
+  const [viewing, setViewing] = useState(null)
+  const [f, setF] = useState({ subject: '', message: '', priority: 'normal' })
+  const load = async () => { try { setItems(await api('/support/tickets')) } catch (e) { toast.error(e.message) } }
+  useEffect(() => { load(); api('/settings/public').then(setSettings).catch(() => {}) }, [])
+  const submit = async (e) => {
+    e.preventDefault()
+    try { await api('/support/tickets', { method: 'POST', body: JSON.stringify(f) }); toast.success('Ticket raised'); setOpen(false); setF({ subject: '', message: '', priority: 'normal' }); load() } catch (e) { toast.error(e.message) }
+  }
+  const reply = async () => {
+    const msg = prompt('Your reply:'); if (!msg) return
+    try { await api(`/support/tickets/${viewing.id}/reply`, { method: 'POST', body: JSON.stringify({ message: msg }) }); toast.success('Sent'); load(); setViewing(null) } catch (e) { toast.error(e.message) }
+  }
+  return (
+    <div className="space-y-4">
+      <SectionHeader title="Support" subtitle="Raise a ticket or reach us on WhatsApp" action={<Button onClick={() => setOpen(true)} className="gap-1"><Plus className="h-4 w-4" /> New Ticket</Button>} />
+      {settings && (settings.supportWhatsapp || settings.supportEmail) && (
+        <Card>
+          <CardContent className="p-4 flex flex-wrap items-center gap-3">
+            {settings.supportWhatsapp && <a href={`https://wa.me/${String(settings.supportWhatsapp).replace(/[^0-9]/g, '')}?text=${encodeURIComponent(settings.defaultMessage || 'Hi, I need help')}`} target="_blank" rel="noreferrer"><Button variant="outline" size="sm">💬 WhatsApp {settings.supportWhatsapp}</Button></a>}
+            {settings.supportEmail && <a href={`mailto:${settings.supportEmail}`}><Button variant="outline" size="sm">✉ {settings.supportEmail}</Button></a>}
+            {settings.supportPhone && <a href={`tel:${settings.supportPhone}`}><Button variant="outline" size="sm">📞 {settings.supportPhone}</Button></a>}
+          </CardContent>
+        </Card>
+      )}
+      <Card>
+        <CardContent className="p-0 overflow-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+              <tr><th className="text-left p-3">Code</th><th className="text-left p-3">Subject</th><th className="text-left p-3">Priority</th><th className="text-left p-3">Status</th><th className="text-right p-3">Created</th><th></th></tr>
+            </thead>
+            <tbody>
+              {items.length === 0 && <tr><td colSpan={6} className="p-8 text-center text-muted-foreground">No tickets yet.</td></tr>}
+              {items.map((t) => (
+                <tr key={t.id} className="border-t hover:bg-muted/30 cursor-pointer" onClick={() => setViewing(t)}>
+                  <td className="p-3 font-mono text-xs">{t.code}</td>
+                  <td className="p-3 font-medium">{t.subject}</td>
+                  <td className="p-3"><Badge variant="outline">{t.priority}</Badge></td>
+                  <td className="p-3"><Badge variant={t.status === 'resolved' || t.status === 'closed' ? 'secondary' : 'default'}>{t.status}</Badge></td>
+                  <td className="p-3 text-right text-xs">{new Date(t.createdAt).toLocaleString()}</td>
+                  <td className="p-3"><Button size="sm" variant="ghost">View</Button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>New Ticket</DialogTitle></DialogHeader>
+          <form onSubmit={submit} className="space-y-3">
+            <div><Label>Subject *</Label><Input required value={f.subject} onChange={(e) => setF({ ...f, subject: e.target.value })} /></div>
+            <div><Label>Message</Label><Textarea rows={4} value={f.message} onChange={(e) => setF({ ...f, message: e.target.value })} /></div>
+            <div>
+              <Label>Priority</Label>
+              <Select value={f.priority} onValueChange={(v) => setF({ ...f, priority: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="low">Low</SelectItem><SelectItem value="normal">Normal</SelectItem><SelectItem value="high">High</SelectItem><SelectItem value="urgent">Urgent</SelectItem></SelectContent>
+              </Select>
+            </div>
+            <DialogFooter><Button type="button" variant="ghost" onClick={() => setOpen(false)}>Cancel</Button><Button type="submit">Submit</Button></DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={!!viewing} onOpenChange={(o) => !o && setViewing(null)}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>{viewing?.subject}</DialogTitle><DialogDescription>{viewing?.code}</DialogDescription></DialogHeader>
+          {viewing && (
+            <div className="space-y-3 text-sm">
+              <div className="p-3 bg-muted rounded">{viewing.message}</div>
+              {(viewing.replies || []).map((r) => (
+                <div key={r.id} className="p-3 border rounded">
+                  <div className="text-xs text-muted-foreground">{r.by} ({r.role}) · {new Date(r.at).toLocaleString()}</div>
+                  <div>{r.message}</div>
+                </div>
+              ))}
+              {viewing.status !== 'closed' && <Button onClick={reply}>Add Reply</Button>}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
+
 // ============================= Root App =============================
 function App() {
-  const [screen, setScreen] = useState('loading') // loading | landing | auth | app
+  const [screen, setScreen] = useState('loading') // loading | setup | landing | auth | app | superadmin
   const [authMode, setAuthMode] = useState('login')
   const [user, setUser] = useState(null)
   const [agency, setAgency] = useState(null)
   const [active, setActive] = useState('dashboard')
 
   const bootstrap = useCallback(async () => {
+    try {
+      const status = await fetch('/api/setup/status').then((r) => r.json())
+      if (status.needsSetup) { setScreen('setup'); return }
+    } catch (e) {}
     const t = getToken()
     if (!t) { setScreen('landing'); return }
     try {
       const me = await api('/auth/me')
       setUser(me.user); setAgency(me.agency)
-      setScreen('app')
+      setScreen(me.user.role === 'super_admin' ? 'superadmin' : 'app')
     } catch (e) {
       clearToken(); setScreen('landing')
     }
@@ -2463,7 +3483,9 @@ function App() {
   useEffect(() => { bootstrap() }, [bootstrap])
 
   const onAuthSuccess = (data) => {
-    setUser(data.user); setAgency(data.agency); setScreen('app'); setActive('dashboard')
+    setUser(data.user); setAgency(data.agency)
+    if (data.user.role === 'super_admin') setScreen('superadmin')
+    else { setScreen('app'); setActive('dashboard') }
   }
 
   const logout = () => {
@@ -2471,15 +3493,20 @@ function App() {
     toast.success('Logged out')
   }
 
+  const onSetupComplete = (data) => {
+    setUser(data.user)
+    setScreen('superadmin')
+    toast.success('Now log in changes are saved.')
+  }
+
   if (screen === 'loading') {
     return <div className="min-h-screen flex items-center justify-center text-sm text-muted-foreground">Loading DutyOnTrack...</div>
   }
-  if (screen === 'landing') {
-    return <Landing onAuth={(mode) => { setAuthMode(mode); setScreen('auth') }} />
-  }
-  if (screen === 'auth') {
-    return <AuthScreen initialMode={authMode} onSuccess={onAuthSuccess} onBack={() => setScreen('landing')} />
-  }
+  if (screen === 'setup') return <SetupWizard onComplete={onSetupComplete} />
+  if (screen === 'superadmin') return <SuperAdminApp user={user} onLogout={logout} />
+  if (screen === 'landing') return <Landing onAuth={(mode) => { setAuthMode(mode); setScreen('auth') }} />
+  if (screen === 'auth') return <AuthScreen initialMode={authMode} onSuccess={onAuthSuccess} onBack={() => setScreen('landing')} />
+
   return (
     <Shell user={user} agency={agency} onLogout={logout} active={active} setActive={setActive}>
       {active === 'dashboard' && <Dashboard setActive={setActive} />}
@@ -2496,6 +3523,8 @@ function App() {
       {active === 'expenses' && <ExpensesModule />}
       {active === 'salary' && <SalaryModule />}
       {active === 'reports' && <ReportsModule />}
+      {active === 'subscription' && <SubscriptionModule />}
+      {active === 'supporttickets' && <AgencySupport />}
     </Shell>
   )
 }

@@ -25,6 +25,13 @@ async function connectToMongo() {
       await db.collection('expenses').createIndex({ agencyId: 1, date: -1 })
       await db.collection('incomes').createIndex({ agencyId: 1, date: -1 })
       await db.collection('invoices').createIndex({ agencyId: 1, createdAt: -1 })
+      await db.collection('platform_settings').createIndex({ id: 1 }, { unique: true })
+      await db.collection('plans').createIndex({ id: 1 }, { unique: true })
+      await db.collection('payment_requests').createIndex({ agencyId: 1, createdAt: -1 })
+      await db.collection('payment_requests').createIndex({ status: 1 })
+      await db.collection('receipts').createIndex({ agencyId: 1, createdAt: -1 })
+      await db.collection('super_audit').createIndex({ createdAt: -1 })
+      await db.collection('support_tickets').createIndex({ agencyId: 1, createdAt: -1 })
     } catch (e) {}
   }
   return db
@@ -75,8 +82,28 @@ async function getAuth(request) {
   const database = await connectToMongo()
   const user = await database.collection('users').findOne({ id: payload.userId })
   if (!user) return null
-  return { user, agencyId: user.agencyId, role: user.role }
+  return { user, agencyId: user.agencyId, role: user.role, impersonatorId: payload.impersonatorId || null }
 }
+
+async function requireSuperAdmin(request) {
+  const auth = await getAuth(request)
+  if (!auth || auth.role !== 'super_admin') return null
+  return auth
+}
+
+async function logSuperAudit(database, actorUserId, action, target, message, meta = {}) {
+  await database.collection('super_audit').insertOne({
+    id: uuidv4(), actorUserId, action, target, message, meta, createdAt: new Date(),
+  })
+}
+
+// Default plans seed
+const DEFAULT_PLANS = [
+  { id: 'plan_free', code: 'FREE', name: 'Free', monthlyPrice: 0, yearlyPrice: 0, maxStaff: 5, maxClients: 5, maxVendors: 5, maxBranches: 1, storageGB: 1, features: ['Basic CRM', 'Basic Reports'], recommended: false, active: true, description: 'Starter plan for small teams' },
+  { id: 'plan_starter', code: 'STARTER', name: 'Starter', monthlyPrice: 499, yearlyPrice: 4990, maxStaff: 25, maxClients: 25, maxVendors: 25, maxBranches: 1, storageGB: 10, features: ['All Free features', 'Invoices', 'Salary slips', 'Reports export'], recommended: false, active: true, description: 'For growing agencies' },
+  { id: 'plan_pro', code: 'PROFESSIONAL', name: 'Professional', monthlyPrice: 1499, yearlyPrice: 14990, maxStaff: 100, maxClients: 100, maxVendors: 100, maxBranches: 3, storageGB: 50, features: ['All Starter features', 'Multi-branch', 'Priority support', 'Advanced analytics'], recommended: true, active: true, description: 'Most popular — mid-sized agencies' },
+  { id: 'plan_ent', code: 'ENTERPRISE', name: 'Enterprise', monthlyPrice: 4999, yearlyPrice: 49990, maxStaff: 10000, maxClients: 10000, maxVendors: 10000, maxBranches: 100, storageGB: 500, features: ['All Pro features', 'Unlimited scale', 'Dedicated manager', 'Custom integrations'], recommended: false, active: true, description: 'For large agencies at scale' },
+]
 
 function clean(doc) {
   if (!doc) return doc
@@ -191,6 +218,77 @@ async function handleRoute(request, { params }) {
     // Health
     if ((route === '/' || route === '/root') && method === 'GET') {
       return json({ message: 'DutyOnTrack API', status: 'ok' })
+    }
+
+    // ============ SETUP (first-time, no auth) ============
+    if (route === '/setup/status' && method === 'GET') {
+      const superAdmin = await database.collection('users').findOne({ role: 'super_admin' })
+      const settings = await database.collection('platform_settings').findOne({ id: 'platform_settings' })
+      return json({ hasSuperAdmin: !!superAdmin, hasSettings: !!settings, needsSetup: !superAdmin })
+    }
+    if (route === '/setup/complete' && method === 'POST') {
+      const existing = await database.collection('users').findOne({ role: 'super_admin' })
+      if (existing) return err('Super admin already exists', 409)
+      const b = await request.json()
+      const required = ['name', 'email', 'password']
+      for (const f of required) if (!b[f]) return err(`${f} is required`)
+      const userId = uuidv4()
+      const user = {
+        id: userId, agencyId: null, name: b.name, email: b.email.toLowerCase(), phone: b.phone || '',
+        role: 'super_admin', passwordHash: hashPassword(b.password), createdAt: new Date(),
+      }
+      await database.collection('users').insertOne(user)
+
+      const settings = {
+        id: 'platform_settings',
+        platformName: b.platformName || 'DutyOnTrack',
+        logoUrl: b.logoUrl || '',
+        faviconUrl: b.faviconUrl || '',
+        supportWhatsapp: b.supportWhatsapp || '',
+        supportEmail: b.supportEmail || '',
+        supportPhone: b.supportPhone || '',
+        companyName: b.companyName || 'DutyOnTrack',
+        companyAddress: b.companyAddress || '',
+        gstNumber: b.gstNumber || '',
+        invoicePrefix: b.invoicePrefix || 'INV',
+        receiptPrefix: b.receiptPrefix || 'RCP',
+        currency: b.currency || 'INR',
+        taxPercentage: Number(b.taxPercentage || 0),
+        timezone: b.timezone || 'Asia/Kolkata',
+        dateFormat: b.dateFormat || 'DD-MM-YYYY',
+        // Bank / payment
+        accountHolderName: b.accountHolderName || '',
+        bankName: b.bankName || '',
+        accountNumber: b.accountNumber || '',
+        ifscCode: b.ifscCode || '',
+        upiId: b.upiId || '',
+        qrCodeUrl: b.qrCodeUrl || '',
+        defaultMessage: b.defaultMessage || 'Hello DutyOnTrack Team, I need help with my CRM.',
+        updatedAt: new Date(), createdAt: new Date(),
+      }
+      await database.collection('platform_settings').insertOne(settings)
+
+      // Seed default plans if none
+      const planCount = await database.collection('plans').countDocuments({})
+      if (planCount === 0) {
+        await database.collection('plans').insertMany(DEFAULT_PLANS.map((p) => ({ ...p, createdAt: new Date() })))
+      }
+
+      await logSuperAudit(database, userId, 'setup_complete', 'platform', 'Initial setup completed')
+      const token = createToken({ userId, agencyId: null, role: 'super_admin' })
+      return json({ token, user: clean(user), settings })
+    }
+
+    // Public settings for payment page (no auth)
+    if (route === '/settings/public' && method === 'GET') {
+      const s = await database.collection('platform_settings').findOne({ id: 'platform_settings' })
+      if (!s) return json({})
+      const { _id, ...rest } = s
+      return json(rest)
+    }
+    if (route === '/plans/public' && method === 'GET') {
+      const plans = await database.collection('plans').find({ active: true }).sort({ monthlyPrice: 1 }).toArray()
+      return json(clean(plans))
     }
 
     // ============ AUTH ============
@@ -358,8 +456,9 @@ async function handleRoute(request, { params }) {
     if (route === '/staff' && method === 'POST') {
       const agency = await database.collection('agencies').findOne({ id: agencyId })
       const count = await database.collection('staff').countDocuments({ agencyId })
-      if (agency?.plan === 'FREE' && count >= (agency.limits?.maxStaff || 5)) {
-        return err('Free plan limit reached (5 staff). Upgrade to add more.', 402)
+      const maxStaff = agency?.limits?.maxStaff ?? 5
+      if (count >= maxStaff) {
+        return err(`Plan limit reached (${maxStaff} staff). Upgrade your plan to add more.`, 402)
       }
       const b = await request.json()
       if (!b.name) return err('name required')
@@ -410,8 +509,9 @@ async function handleRoute(request, { params }) {
     if (route === '/clients' && method === 'POST') {
       const agency = await database.collection('agencies').findOne({ id: agencyId })
       const count = await database.collection('clients').countDocuments({ agencyId })
-      if (agency?.plan === 'FREE' && count >= (agency.limits?.maxClients || 5)) {
-        return err('Free plan limit reached (5 clients). Upgrade to add more.', 402)
+      const maxClients = agency?.limits?.maxClients ?? 5
+      if (count >= maxClients) {
+        return err(`Plan limit reached (${maxClients} clients). Upgrade your plan to add more.`, 402)
       }
       const b = await request.json()
       if (!b.name) return err('name required')
@@ -466,6 +566,12 @@ async function handleRoute(request, { params }) {
       return json(clean(items))
     }
     if (route === '/vendors' && method === 'POST') {
+      const agency = await database.collection('agencies').findOne({ id: agencyId })
+      const count = await database.collection('vendors').countDocuments({ agencyId })
+      const maxVendors = agency?.limits?.maxVendors ?? 5
+      if (count >= maxVendors) {
+        return err(`Plan limit reached (${maxVendors} vendors). Upgrade your plan to add more.`, 402)
+      }
       const b = await request.json()
       if (!b.name) return err('name required')
       const doc = {
@@ -1063,6 +1169,405 @@ async function handleRoute(request, { params }) {
       }
       const items = await database.collection('activities').find(q).sort({ createdAt: -1 }).limit(500).toArray()
       return json(clean(items))
+    }
+
+    // ============ SUBSCRIPTION (agency side) ============
+    if (route === '/subscription/plans' && method === 'GET') {
+      const plans = await database.collection('plans').find({ active: true }).sort({ monthlyPrice: 1 }).toArray()
+      return json(clean(plans))
+    }
+    if (route === '/subscription/me' && method === 'GET') {
+      const agency = await database.collection('agencies').findOne({ id: agencyId })
+      const [staffCount, clientCount, vendorCount] = await Promise.all([
+        database.collection('staff').countDocuments({ agencyId }),
+        database.collection('clients').countDocuments({ agencyId }),
+        database.collection('vendors').countDocuments({ agencyId }),
+      ])
+      const requests = await database.collection('payment_requests').find({ agencyId }).sort({ createdAt: -1 }).toArray()
+      const receipts = await database.collection('receipts').find({ agencyId }).sort({ createdAt: -1 }).toArray()
+      return json({
+        agency: clean(agency),
+        usage: { staffCount, clientCount, vendorCount },
+        requests: clean(requests), receipts: clean(receipts),
+      })
+    }
+    if (route === '/subscription/request' && method === 'POST') {
+      const b = await request.json()
+      if (!b.planId || !b.amount) return err('planId and amount required')
+      const plan = await database.collection('plans').findOne({ id: b.planId })
+      if (!plan) return err('Plan not found', 404)
+      const doc = {
+        id: uuidv4(), agencyId, planId: b.planId, planCode: plan.code, planName: plan.name,
+        billingCycle: b.billingCycle || 'monthly',
+        amount: Number(b.amount),
+        utrNumber: b.utrNumber || '',
+        screenshotUrl: b.screenshotUrl || '', // base64 data URL
+        transactionDate: b.transactionDate || new Date().toISOString().slice(0, 10),
+        remarks: b.remarks || '',
+        status: 'pending', // pending | approved | rejected | more_info
+        superAdminNote: '',
+        createdAt: new Date(),
+      }
+      await database.collection('payment_requests').insertOne(doc)
+      await logActivity(database, agencyId, 'subscription_request', `Payment request submitted: ${plan.name} ₹${b.amount} UTR:${b.utrNumber}`)
+      return json(clean(doc))
+    }
+    if (route.startsWith('/subscription/request/') && method === 'PUT') {
+      // Agency can edit their own pending request (e.g., after more_info request)
+      const id = route.split('/')[3]
+      const b = await request.json()
+      const existing = await database.collection('payment_requests').findOne({ id, agencyId })
+      if (!existing) return err('not found', 404)
+      if (existing.status === 'approved' || existing.status === 'rejected') return err('Cannot edit finalized request', 400)
+      const upd = {
+        utrNumber: b.utrNumber ?? existing.utrNumber,
+        screenshotUrl: b.screenshotUrl ?? existing.screenshotUrl,
+        amount: b.amount != null ? Number(b.amount) : existing.amount,
+        transactionDate: b.transactionDate ?? existing.transactionDate,
+        remarks: b.remarks ?? existing.remarks,
+        status: 'pending',
+      }
+      await database.collection('payment_requests').updateOne({ id, agencyId }, { $set: upd })
+      return json({ ok: true })
+    }
+
+    // Support tickets (both agency and super admin)
+    if (route === '/support/tickets' && method === 'GET') {
+      let items
+      if (auth.role === 'super_admin') items = await database.collection('support_tickets').find({}).sort({ createdAt: -1 }).toArray()
+      else items = await database.collection('support_tickets').find({ agencyId }).sort({ createdAt: -1 }).toArray()
+      // Enrich with agency name for super admin
+      if (auth.role === 'super_admin') {
+        const agencies = await database.collection('agencies').find({}).toArray()
+        const map = Object.fromEntries(agencies.map((a) => [a.id, a.name]))
+        return json(items.map((t) => { const c = clean(t); return { ...c, agencyName: map[c.agencyId] || '' } }))
+      }
+      return json(clean(items))
+    }
+    if (route === '/support/tickets' && method === 'POST') {
+      const b = await request.json()
+      if (!b.subject) return err('subject required')
+      const doc = {
+        id: uuidv4(), agencyId: agencyId || null,
+        code: 'TKT' + Math.floor(1000 + Math.random() * 9000),
+        subject: b.subject, message: b.message || '',
+        priority: b.priority || 'normal', // low, normal, high, urgent
+        status: 'open', // open, in_progress, resolved, closed
+        createdBy: auth.user.name,
+        replies: [],
+        createdAt: new Date(), updatedAt: new Date(),
+      }
+      await database.collection('support_tickets').insertOne(doc)
+      return json(clean(doc))
+    }
+    if (route.startsWith('/support/tickets/') && route.endsWith('/reply') && method === 'POST') {
+      const id = route.split('/')[3]
+      const b = await request.json()
+      const ticket = await database.collection('support_tickets').findOne({ id })
+      if (!ticket) return err('not found', 404)
+      if (auth.role !== 'super_admin' && ticket.agencyId !== agencyId) return err('forbidden', 403)
+      const reply = {
+        id: uuidv4(), by: auth.user.name, role: auth.role,
+        message: b.message || '', at: new Date(),
+      }
+      await database.collection('support_tickets').updateOne(
+        { id },
+        { $push: { replies: reply }, $set: { updatedAt: new Date(), status: b.status || ticket.status } }
+      )
+      return json({ ok: true })
+    }
+    if (route.startsWith('/support/tickets/') && method === 'PUT') {
+      const id = route.split('/')[3]
+      const b = await request.json()
+      const ticket = await database.collection('support_tickets').findOne({ id })
+      if (!ticket) return err('not found', 404)
+      if (auth.role !== 'super_admin' && ticket.agencyId !== agencyId) return err('forbidden', 403)
+      const upd = {}
+      if (b.status) upd.status = b.status
+      if (b.priority) upd.priority = b.priority
+      if (b.assignedTo) upd.assignedTo = b.assignedTo
+      upd.updatedAt = new Date()
+      await database.collection('support_tickets').updateOne({ id }, { $set: upd })
+      return json({ ok: true })
+    }
+
+    // ============ SUPER ADMIN ============
+    // ALL /admin/* routes require super_admin
+    if (route.startsWith('/admin/') || route === '/settings/platform' || route.startsWith('/plans')) {
+      if (auth.role !== 'super_admin') return err('Forbidden - Super Admin only', 403)
+    }
+
+    // Platform settings
+    if (route === '/settings/platform' && method === 'GET') {
+      const s = await database.collection('platform_settings').findOne({ id: 'platform_settings' })
+      return json(s ? clean(s) : {})
+    }
+    if (route === '/settings/platform' && method === 'PUT') {
+      const b = await request.json()
+      delete b.id; delete b._id
+      b.updatedAt = new Date()
+      await database.collection('platform_settings').updateOne({ id: 'platform_settings' }, { $set: b }, { upsert: true })
+      const s = await database.collection('platform_settings').findOne({ id: 'platform_settings' })
+      await logSuperAudit(database, auth.user.id, 'settings_updated', 'platform_settings', 'Platform settings updated')
+      return json(clean(s))
+    }
+
+    // Plans management
+    if (route === '/plans' && method === 'GET') {
+      const items = await database.collection('plans').find({}).sort({ monthlyPrice: 1 }).toArray()
+      return json(clean(items))
+    }
+    if (route === '/plans' && method === 'POST') {
+      const b = await request.json()
+      if (!b.name || !b.code) return err('name and code required')
+      const doc = {
+        id: uuidv4(), code: b.code, name: b.name,
+        monthlyPrice: Number(b.monthlyPrice || 0), yearlyPrice: Number(b.yearlyPrice || 0),
+        maxStaff: Number(b.maxStaff || 5), maxClients: Number(b.maxClients || 5), maxVendors: Number(b.maxVendors || 5),
+        maxBranches: Number(b.maxBranches || 1), storageGB: Number(b.storageGB || 1),
+        features: Array.isArray(b.features) ? b.features : (b.features || '').split(',').map((s) => s.trim()).filter(Boolean),
+        description: b.description || '', recommended: !!b.recommended, active: b.active !== false,
+        createdAt: new Date(),
+      }
+      await database.collection('plans').insertOne(doc)
+      await logSuperAudit(database, auth.user.id, 'plan_created', doc.id, `Plan ${doc.name} created`)
+      return json(clean(doc))
+    }
+    if (route.startsWith('/plans/') && method === 'PUT') {
+      const id = route.split('/')[2]
+      const b = await request.json()
+      delete b.id; delete b._id
+      if (b.features && !Array.isArray(b.features)) b.features = b.features.split(',').map((s) => s.trim()).filter(Boolean)
+      await database.collection('plans').updateOne({ id }, { $set: b })
+      const p = await database.collection('plans').findOne({ id })
+      await logSuperAudit(database, auth.user.id, 'plan_updated', id, `Plan ${p?.name} updated`)
+      return json(clean(p))
+    }
+    if (route.startsWith('/plans/') && method === 'DELETE') {
+      const id = route.split('/')[2]
+      await database.collection('plans').deleteOne({ id })
+      await logSuperAudit(database, auth.user.id, 'plan_deleted', id, `Plan deleted`)
+      return json({ ok: true })
+    }
+
+    // Admin dashboard (platform-wide metrics)
+    if (route === '/admin/dashboard' && method === 'GET') {
+      const [agencies, allStaff, allClients, allVendors, allPlacements, requests, receipts, tickets] = await Promise.all([
+        database.collection('agencies').find({}).toArray(),
+        database.collection('staff').countDocuments({}),
+        database.collection('clients').countDocuments({}),
+        database.collection('vendors').countDocuments({}),
+        database.collection('placements').countDocuments({ status: 'active' }),
+        database.collection('payment_requests').find({}).toArray(),
+        database.collection('receipts').find({}).toArray(),
+        database.collection('support_tickets').find({}).toArray(),
+      ])
+      const todayIso = new Date().toISOString().slice(0, 10)
+      const now = new Date()
+
+      const trialAgencies = agencies.filter((a) => a.plan === 'FREE').length
+      const paidAgencies = agencies.filter((a) => a.plan !== 'FREE' && (!a.expiryDate || new Date(a.expiryDate) >= now)).length
+      const expiredAgencies = agencies.filter((a) => a.expiryDate && new Date(a.expiryDate) < now).length
+      const todayRegistrations = agencies.filter((a) => a.createdAt && new Date(a.createdAt).toISOString().slice(0, 10) === todayIso).length
+
+      const totalRevenue = receipts.reduce((a, r) => a + Number(r.amount || 0), 0)
+      const pendingApprovals = requests.filter((r) => r.status === 'pending').length
+      const openTickets = tickets.filter((t) => t.status === 'open').length
+
+      // Platform growth: agencies created per month, last 6 months
+      const growth = []
+      for (let i = 5; i >= 0; i--) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
+        const nd = new Date(now.getFullYear(), now.getMonth() - i + 1, 1)
+        const c = agencies.filter((a) => a.createdAt && new Date(a.createdAt) >= d && new Date(a.createdAt) < nd).length
+        const rev = receipts.filter((r) => r.createdAt && new Date(r.createdAt) >= d && new Date(r.createdAt) < nd).reduce((s, r) => s + Number(r.amount || 0), 0)
+        growth.push({ month: d.toLocaleString('en-US', { month: 'short' }), agencies: c, revenue: rev })
+      }
+
+      return json({
+        cards: {
+          totalAgencies: agencies.length, trialAgencies, paidAgencies, expiredAgencies, todayRegistrations,
+          totalStaff: allStaff, totalClients: allClients, totalVendors: allVendors, activeDuties: allPlacements,
+          totalRevenue, pendingApprovals, openTickets,
+          mrr: agencies.reduce((s, a) => s + (a.monthlyPrice || 0), 0),
+        },
+        growth,
+      })
+    }
+
+    // Agency management
+    if (route === '/admin/agencies' && method === 'GET') {
+      const agencies = await database.collection('agencies').find({}).sort({ createdAt: -1 }).toArray()
+      const staffAgg = await database.collection('staff').aggregate([{ $group: { _id: '$agencyId', count: { $sum: 1 } } }]).toArray()
+      const clientAgg = await database.collection('clients').aggregate([{ $group: { _id: '$agencyId', count: { $sum: 1 } } }]).toArray()
+      const placementAgg = await database.collection('placements').aggregate([{ $match: { status: 'active' } }, { $group: { _id: '$agencyId', count: { $sum: 1 } } }]).toArray()
+      const receiptsAgg = await database.collection('receipts').aggregate([{ $group: { _id: '$agencyId', total: { $sum: '$amount' } } }]).toArray()
+      const owners = await database.collection('users').find({ role: 'agency_owner' }).toArray()
+      const mapS = Object.fromEntries(staffAgg.map((r) => [r._id, r.count]))
+      const mapC = Object.fromEntries(clientAgg.map((r) => [r._id, r.count]))
+      const mapP = Object.fromEntries(placementAgg.map((r) => [r._id, r.count]))
+      const mapR = Object.fromEntries(receiptsAgg.map((r) => [r._id, r.total]))
+      const mapU = Object.fromEntries(owners.map((u) => [u.agencyId, u]))
+      const rows = agencies.map((a) => ({
+        ...clean(a),
+        staffCount: mapS[a.id] || 0,
+        clientCount: mapC[a.id] || 0,
+        activePlacements: mapP[a.id] || 0,
+        totalPaid: mapR[a.id] || 0,
+        ownerEmail: mapU[a.id]?.email || a.ownerEmail,
+      }))
+      return json(rows)
+    }
+    if (route.startsWith('/admin/agencies/') && route.endsWith('/suspend') && method === 'POST') {
+      const id = route.split('/')[3]
+      await database.collection('agencies').updateOne({ id }, { $set: { status: 'suspended' } })
+      await logSuperAudit(database, auth.user.id, 'agency_suspended', id, `Agency suspended`)
+      return json({ ok: true })
+    }
+    if (route.startsWith('/admin/agencies/') && route.endsWith('/activate') && method === 'POST') {
+      const id = route.split('/')[3]
+      await database.collection('agencies').updateOne({ id }, { $set: { status: 'active' } })
+      await logSuperAudit(database, auth.user.id, 'agency_activated', id, `Agency activated`)
+      return json({ ok: true })
+    }
+    if (route.startsWith('/admin/agencies/') && route.endsWith('/change-plan') && method === 'POST') {
+      const id = route.split('/')[3]
+      const b = await request.json()
+      const plan = await database.collection('plans').findOne({ id: b.planId })
+      if (!plan) return err('plan not found', 404)
+      const days = (b.billingCycle || 'monthly') === 'yearly' ? 365 : 30
+      const expiryDate = new Date(Date.now() + days * 86400000).toISOString().slice(0, 10)
+      await database.collection('agencies').updateOne({ id }, { $set: {
+        plan: plan.code, planId: plan.id, planName: plan.name,
+        limits: { maxStaff: plan.maxStaff, maxClients: plan.maxClients, maxVendors: plan.maxVendors, maxBranches: plan.maxBranches },
+        monthlyPrice: plan.monthlyPrice,
+        activatedOn: new Date().toISOString().slice(0, 10),
+        expiryDate,
+        status: 'active',
+      } })
+      await logSuperAudit(database, auth.user.id, 'plan_changed', id, `Plan changed to ${plan.name}`)
+      return json({ ok: true })
+    }
+    if (route.startsWith('/admin/agencies/') && route.endsWith('/reset-password') && method === 'POST') {
+      const id = route.split('/')[3]
+      const b = await request.json()
+      if (!b.newPassword) return err('newPassword required')
+      await database.collection('users').updateOne({ agencyId: id, role: 'agency_owner' }, { $set: { passwordHash: hashPassword(b.newPassword) } })
+      await logSuperAudit(database, auth.user.id, 'password_reset', id, `Password reset for agency`)
+      return json({ ok: true })
+    }
+    if (route.startsWith('/admin/agencies/') && route.endsWith('/login-as') && method === 'POST') {
+      const id = route.split('/')[3]
+      const owner = await database.collection('users').findOne({ agencyId: id, role: 'agency_owner' })
+      if (!owner) return err('owner not found', 404)
+      const token = createToken({ userId: owner.id, agencyId: id, role: 'agency_owner', impersonatorId: auth.user.id })
+      await logSuperAudit(database, auth.user.id, 'impersonate', id, `Logged in as agency`)
+      return json({ token, user: clean(owner) })
+    }
+    if (route.startsWith('/admin/agencies/') && method === 'DELETE') {
+      const id = route.split('/')[3]
+      // Cascade delete (agency-scoped collections)
+      const collections = ['staff', 'clients', 'vendors', 'placements', 'attendance', 'salary_payments', 'expenses', 'incomes', 'invoices', 'activities', 'payment_requests', 'receipts', 'support_tickets']
+      for (const c of collections) await database.collection(c).deleteMany({ agencyId: id })
+      await database.collection('users').deleteMany({ agencyId: id })
+      await database.collection('agencies').deleteOne({ id })
+      await logSuperAudit(database, auth.user.id, 'agency_deleted', id, `Agency and all data deleted`)
+      return json({ ok: true })
+    }
+
+    // Payment request management
+    if (route === '/admin/payment-requests' && method === 'GET') {
+      const url = new URL(request.url)
+      const status = url.searchParams.get('status')
+      const q = status ? { status } : {}
+      const items = await database.collection('payment_requests').find(q).sort({ createdAt: -1 }).toArray()
+      const agencies = await database.collection('agencies').find({}).toArray()
+      const map = Object.fromEntries(agencies.map((a) => [a.id, a]))
+      return json(items.map((r) => {
+        const c = clean(r); const a = map[c.agencyId]
+        return { ...c, agencyName: a?.name || '', ownerName: a?.ownerName || '', phone: a?.phone || '', email: a?.ownerEmail || '' }
+      }))
+    }
+    if (route.startsWith('/admin/payment-requests/') && route.endsWith('/approve') && method === 'POST') {
+      const id = route.split('/')[3]
+      const approveBody = await request.json().catch(() => ({}))
+      const req = await database.collection('payment_requests').findOne({ id })
+      if (!req) return err('not found', 404)
+      if (req.status === 'approved') return err('Already approved', 400)
+      const plan = await database.collection('plans').findOne({ id: req.planId })
+      if (!plan) return err('plan gone', 500)
+      const days = req.billingCycle === 'yearly' ? 365 : 30
+      const now = new Date()
+      const agency = await database.collection('agencies').findOne({ id: req.agencyId })
+      const base = agency?.expiryDate && new Date(agency.expiryDate) > now ? new Date(agency.expiryDate) : now
+      const expiryDate = new Date(base.getTime() + days * 86400000).toISOString().slice(0, 10)
+      const activatedOn = now.toISOString().slice(0, 10)
+      await database.collection('agencies').updateOne({ id: req.agencyId }, { $set: {
+        plan: plan.code, planId: plan.id, planName: plan.name,
+        limits: { maxStaff: plan.maxStaff, maxClients: plan.maxClients, maxVendors: plan.maxVendors, maxBranches: plan.maxBranches },
+        monthlyPrice: plan.monthlyPrice,
+        activatedOn, expiryDate, status: 'active',
+      } })
+      const seq = (await database.collection('receipts').countDocuments({})) + 1
+      const settings = await database.collection('platform_settings').findOne({ id: 'platform_settings' })
+      const prefix = settings?.receiptPrefix || 'RCP'
+      const number = `${prefix}-${now.getFullYear()}-${String(seq).padStart(5, '0')}`
+      const receipt = {
+        id: uuidv4(), number, agencyId: req.agencyId, paymentRequestId: req.id,
+        planId: plan.id, planName: plan.name, billingCycle: req.billingCycle || 'monthly',
+        amount: Number(req.amount), utrNumber: req.utrNumber, method: 'Manual (Bank/UPI)',
+        activatedOn, expiryDate,
+        snapshot: {
+          agencyName: agency?.name, agencyPhone: agency?.phone, agencyAddress: agency?.address,
+          platformName: settings?.platformName, companyName: settings?.companyName, companyAddress: settings?.companyAddress,
+          gstNumber: settings?.gstNumber, supportEmail: settings?.supportEmail,
+        },
+        createdAt: now,
+      }
+      await database.collection('receipts').insertOne(receipt)
+      await database.collection('payment_requests').updateOne({ id }, { $set: { status: 'approved', receiptId: receipt.id, approvedAt: now, superAdminNote: approveBody?.note || '' } })
+      await logActivity(database, req.agencyId, 'plan_activated', `Plan ${plan.name} activated · Expires ${expiryDate}`)
+      await logSuperAudit(database, auth.user.id, 'payment_approved', id, `Approved ₹${req.amount} for agency ${agency?.name} → ${plan.name}`)
+      return json({ ok: true, receipt: clean(receipt) })
+    }
+    if (route.startsWith('/admin/payment-requests/') && route.endsWith('/reject') && method === 'POST') {
+      const id = route.split('/')[3]
+      const b = await request.json().catch(() => ({}))
+      const req = await database.collection('payment_requests').findOne({ id })
+      if (!req) return err('not found', 404)
+      await database.collection('payment_requests').updateOne({ id }, { $set: { status: 'rejected', superAdminNote: b.note || '', rejectedAt: new Date() } })
+      await logActivity(database, req.agencyId, 'plan_rejected', `Payment request rejected: ${b.note || ''}`)
+      await logSuperAudit(database, auth.user.id, 'payment_rejected', id, `Rejected payment request`)
+      return json({ ok: true })
+    }
+    if (route.startsWith('/admin/payment-requests/') && route.endsWith('/request-info') && method === 'POST') {
+      const id = route.split('/')[3]
+      const b = await request.json().catch(() => ({}))
+      await database.collection('payment_requests').updateOne({ id }, { $set: { status: 'more_info', superAdminNote: b.note || '' } })
+      return json({ ok: true })
+    }
+
+    // Audit log
+    if (route === '/admin/audit' && method === 'GET') {
+      const items = await database.collection('super_audit').find({}).sort({ createdAt: -1 }).limit(500).toArray()
+      return json(clean(items))
+    }
+    // Users (super admin manages)
+    if (route === '/admin/users' && method === 'GET') {
+      const items = await database.collection('users').find({}).sort({ createdAt: -1 }).toArray()
+      return json(clean(items))
+    }
+
+    // ============ RECEIPTS (agency-facing) ============
+    if (route === '/receipts' && method === 'GET') {
+      const items = await database.collection('receipts').find({ agencyId }).sort({ createdAt: -1 }).toArray()
+      return json(clean(items))
+    }
+    if (route.startsWith('/receipts/') && method === 'GET') {
+      const id = route.split('/')[2]
+      const r = await database.collection('receipts').findOne({ id, agencyId })
+      if (!r) return err('not found', 404)
+      return json(clean(r))
     }
 
     // ============ SEARCH ============

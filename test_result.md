@@ -582,3 +582,289 @@ agent_communication:
       - All tests passed on retry - infrastructure issue, not application bug
       
       RECOMMENDATION: Phase 2 backend is production-ready. All business logic, calculations, side effects, and multi-tenant isolation working perfectly across all new endpoints.
+
+
+  - agent: "main"
+    message: |
+      Phase 3: Super Admin + Setup Wizard + Subscription System. Please test comprehensively.
+
+      IMPORTANT NOTE: The database may already contain a super admin from earlier testing (idempotency of /setup/complete returns 409). Handle both cases:
+      - Case 1 (needsSetup=true): call /setup/complete with strong password and remember credentials → login as super admin for /admin/* tests.
+      - Case 2 (needsSetup=false): try common test super admin OR call /setup/complete anyway (expect 409). If you can't obtain a super admin token, test only public + agency-side endpoints and report.
+
+      TEST SCENARIOS (base URL = NEXT_PUBLIC_BASE_URL + /api):
+
+      A) SETUP:
+      1. GET /api/setup/status → { hasSuperAdmin, hasSettings, needsSetup } shape.
+      2. IF needsSetup: POST /api/setup/complete { name, email, password (≥6), phone, platformName, supportWhatsapp, supportEmail, accountHolderName, bankName, accountNumber, ifscCode, upiId } → { token, user: role='super_admin', settings }.
+      3. Second call to /setup/complete must return 409.
+      4. GET /api/settings/public (no auth) → returns settings with bank details.
+      5. GET /api/plans/public (no auth) → 4 default plans (FREE, STARTER, PROFESSIONAL, ENTERPRISE).
+
+      B) PLATFORM SETTINGS (super admin):
+      1. GET /api/settings/platform with SA token → returns full settings incl. bank fields.
+      2. PUT /api/settings/platform { platformName: 'DOT Updated', bankName: 'HDFC Bank' } → GET reflects updates.
+      3. Non-SA (agency owner) hitting these → 403.
+
+      C) PLANS:
+      1. GET /api/plans (SA) → 4 defaults.
+      2. POST /api/plans { code:'CUSTOM', name:'Custom', monthlyPrice:999, maxStaff:50, maxClients:50, maxVendors:50, features:'A,B,C' }.
+      3. PUT /api/plans/:id updates. DELETE removes.
+
+      D) SUBSCRIPTION E2E:
+      1. POST /api/auth/signup (fresh agency). Verify agency.plan='FREE', limits.maxStaff=5.
+      2. Add 5 staff via /api/staff → OK. 6th → 402 with 'limit' in message.
+      3. GET /api/subscription/plans (as agency) → active plans list.
+      4. GET /api/subscription/me → { agency, usage:{staffCount:5,...}, requests:[], receipts:[] }.
+      5. POST /api/subscription/request { planId: professional, amount, utrNumber:'TEST123', screenshotUrl:'data:image/png;base64,iVBORw0KGgo=', transactionDate, billingCycle:'monthly' } → status='pending'.
+      6. As SA: GET /api/admin/payment-requests?status=pending → includes request with agencyName.
+      7. POST /api/admin/payment-requests/:id/approve → agency.plan='PROFESSIONAL', limits.maxStaff=100, expiryDate ≈ today+30, receipt generated (number startsWith prefix), activity + audit entries created.
+      8. GET /api/receipts (as agency) → new receipt appears.
+      9. Now agency POST /api/staff (6th) should succeed.
+      10. Test reject: another request → /reject with note → status='rejected'. Test /request-info → 'more_info'.
+
+      E) AGENCY MANAGEMENT (SA):
+      1. GET /api/admin/agencies → list with staffCount, clientCount, totalPaid, activePlacements.
+      2. /suspend → status='suspended'; /activate → 'active'.
+      3. /change-plan {planId, billingCycle} → limits/expiry updated.
+      4. /reset-password {newPassword} → login with new password works.
+      5. /login-as → returns impersonation token; using it, /auth/me returns owner user of that agency.
+      6. DELETE /admin/agencies/:id → cascade deletes staff/clients/etc.
+
+      F) DASHBOARD: GET /api/admin/dashboard → cards + growth[6].
+
+      G) AUDIT: GET /api/admin/audit → most recent entries reflect actions.
+
+      H) SUPPORT TICKETS:
+      1. Agency: POST /api/support/tickets {subject:'Help', priority:'high'}.
+      2. SA: GET /api/support/tickets → sees it with agencyName.
+      3. POST /support/tickets/:id/reply {message:'On it'} → reply appended.
+      4. PUT /support/tickets/:id {status:'resolved'} → updated.
+      5. Cross-agency isolation.
+
+      I) REGRESSION: Phase 1 & 2 endpoints must still work — staff/clients/vendors POST under limit succeed. FREE-plan cap still 5.
+
+      Please update test_result.md and clearly flag any endpoint that fails.
+# Phase 3 Backend Tasks
+
+backend:
+  - task: "Setup Wizard: GET /setup/status, POST /setup/complete"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "GET /setup/status returns {hasSuperAdmin, hasSettings, needsSetup}. POST /setup/complete creates super admin user with role='super_admin', seeds default plans, creates platform_settings. Returns 409 if super admin already exists."
+      - working: true
+        agent: "testing"
+        comment: "TESTED: GET /setup/status returns correct shape (hasSuperAdmin=true, needsSetup=false). POST /setup/complete correctly returns 409 when super admin already exists (idempotency check passed). Public endpoints /settings/public and /plans/public work without auth and return correct data (25 settings fields, 4 default plans: FREE, STARTER, PROFESSIONAL, ENTERPRISE)."
+
+  - task: "Platform Settings: GET/PUT /settings/platform (super admin only)"
+    implemented: true
+    working: "NA"
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "GET /settings/platform returns full platform settings. PUT updates settings. Both require super_admin role, return 403 for non-SA users."
+      - working: "NA"
+        agent: "testing"
+        comment: "UNABLE TO TEST: Super admin already exists in DB from earlier tests, but credentials not available. Endpoint requires super_admin token. Recommend: Reset DB or provide super admin credentials to test this endpoint."
+
+  - task: "Plans CRUD: GET/POST/PUT/DELETE /plans (super admin only)"
+    implemented: true
+    working: "NA"
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "GET /plans returns all plans. POST creates custom plan. PUT updates plan. DELETE removes plan. All require super_admin role."
+      - working: "NA"
+        agent: "testing"
+        comment: "UNABLE TO TEST: Super admin already exists in DB from earlier tests, but credentials not available. Endpoints require super_admin token. Recommend: Reset DB or provide super admin credentials to test these endpoints."
+
+  - task: "Subscription: GET /subscription/plans, GET /subscription/me, POST /subscription/request"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "GET /subscription/plans returns active plans for agency. GET /subscription/me returns agency info, usage (staffCount, clientCount, vendorCount), payment requests, and receipts. POST /subscription/request creates payment request with status='pending'."
+      - working: true
+        agent: "testing"
+        comment: "TESTED: GET /subscription/plans returns 4 active plans. GET /subscription/me returns correct structure with agency, usage (staffCount=5, clientCount=5, vendorCount=5), requests[], receipts[]. POST /subscription/request successfully creates pending request with planCode='PROFESSIONAL', amount=1499, status='pending'."
+
+  - task: "FREE plan limits: 5 staff, 5 clients, 5 vendors"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "POST /staff, /clients, /vendors enforce FREE plan limits (5 each). 6th creation returns 402 with error message containing 'limit'."
+      - working: true
+        agent: "testing"
+        comment: "TESTED: All FREE plan limits working correctly. Staff: 5 allowed, 6th returns 402 with 'Plan limit reached (5 staff). Upgrade your plan to add more.' Clients: 5 allowed, 6th returns 402 with 'Plan limit reached (5 clients). Upgrade your plan to add more.' Vendors: 5 allowed, 6th returns 402 with 'Plan limit reached (5 vendors). Upgrade your plan to add more.' All error messages contain 'limit' keyword."
+
+  - task: "Payment Request Management: GET /admin/payment-requests, POST /approve, /reject, /request-info (super admin)"
+    implemented: true
+    working: "NA"
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "GET /admin/payment-requests?status=pending returns requests with agencyName enriched. POST /approve updates agency plan, limits, expiryDate, generates receipt with prefix, creates activity and audit entries. POST /reject sets status='rejected'. POST /request-info sets status='more_info'."
+      - working: "NA"
+        agent: "testing"
+        comment: "UNABLE TO TEST: Super admin already exists in DB from earlier tests, but credentials not available. Endpoints require super_admin token. Recommend: Reset DB or provide super admin credentials to test payment approval/rejection flow."
+
+  - task: "Agency Management: GET /admin/agencies, /suspend, /activate, /change-plan, /reset-password, /login-as, DELETE (super admin)"
+    implemented: true
+    working: "NA"
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "GET /admin/agencies returns list with staffCount, clientCount, activePlacements, totalPaid enriched. POST /suspend sets status='suspended'. POST /activate sets status='active'. POST /change-plan updates plan and limits. POST /reset-password updates owner password. POST /login-as returns impersonation token. DELETE cascade deletes agency and all related data."
+      - working: "NA"
+        agent: "testing"
+        comment: "UNABLE TO TEST: Super admin already exists in DB from earlier tests, but credentials not available. Endpoints require super_admin token. Recommend: Reset DB or provide super admin credentials to test agency management operations."
+
+  - task: "Admin Dashboard: GET /admin/dashboard (super admin)"
+    implemented: true
+    working: "NA"
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "GET /admin/dashboard returns cards (totalAgencies, trialAgencies, paidAgencies, totalStaff, totalClients, totalRevenue, pendingApprovals, openTickets, etc.) and growth array with 6 months of data."
+      - working: "NA"
+        agent: "testing"
+        comment: "UNABLE TO TEST: Super admin already exists in DB from earlier tests, but credentials not available. Endpoint requires super_admin token. Recommend: Reset DB or provide super admin credentials to test admin dashboard."
+
+  - task: "Audit Log: GET /admin/audit (super admin)"
+    implemented: true
+    working: "NA"
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "GET /admin/audit returns up to 500 most recent audit entries with action, target, message, createdAt fields."
+      - working: "NA"
+        agent: "testing"
+        comment: "UNABLE TO TEST: Super admin already exists in DB from earlier tests, but credentials not available. Endpoint requires super_admin token. Recommend: Reset DB or provide super admin credentials to test audit log."
+
+  - task: "Support Tickets: GET/POST /support/tickets, POST /reply, PUT (both agency and super admin)"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "POST /support/tickets creates ticket with status='open'. GET /support/tickets returns tickets (agency sees own, SA sees all with agencyName). POST /reply appends reply. PUT updates status. Cross-agency isolation enforced."
+      - working: true
+        agent: "testing"
+        comment: "TESTED (Agency side only): POST /support/tickets creates ticket with correct status='open', priority='high'. PUT /support/tickets/:id updates status to 'resolved'. Cross-agency isolation verified - Agency 2 sees 0 tickets (cannot see Agency 1's tickets). Super admin reply functionality NOT TESTED (no SA credentials)."
+
+  - task: "Receipts: GET /receipts, GET /receipts/:id (agency-facing)"
+    implemented: true
+    working: "NA"
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "GET /receipts returns agency's receipts. GET /receipts/:id returns single receipt. Receipts are generated when payment requests are approved by super admin."
+      - working: "NA"
+        agent: "testing"
+        comment: "UNABLE TO TEST FULLY: Receipt generation requires super admin approval of payment request. Without SA credentials, cannot test receipt creation. Endpoint structure appears correct but needs end-to-end test with SA approval."
+
+metadata:
+  created_by: "main_agent"
+  version: "1.0"
+  test_sequence: 3
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Platform Settings (needs SA credentials)"
+    - "Plans CRUD (needs SA credentials)"
+    - "Payment Request Management (needs SA credentials)"
+    - "Agency Management (needs SA credentials)"
+    - "Admin Dashboard (needs SA credentials)"
+    - "Audit Log (needs SA credentials)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "testing"
+    message: |
+      PHASE 3 BACKEND TESTING COMPLETE (PARTIAL)
+      
+      ✅ TESTED SUCCESSFULLY (24 tests passed):
+      1. Setup Wizard: GET /setup/status returns correct shape, POST /setup/complete returns 409 (idempotency)
+      2. Public Endpoints: /settings/public (25 fields), /plans/public (4 default plans)
+      3. Subscription (Agency side): /subscription/plans, /subscription/me (correct usage counts), /subscription/request (creates pending request)
+      4. FREE Plan Limits: Staff (5 cap), Clients (5 cap), Vendors (5 cap) - all working, 6th returns 402 with "limit" in error
+      5. Support Tickets (Agency side): Create ticket, update status, cross-agency isolation
+      6. Regression: Phase 1 & 2 limits still working correctly
+      
+      ⚠️ UNABLE TO TEST (11 tests skipped - NO SUPER ADMIN CREDENTIALS):
+      The database already contains a super admin from earlier tests, but the credentials are not available.
+      The following endpoints require super_admin role and could not be tested:
+      
+      1. Platform Settings: GET/PUT /settings/platform
+      2. Plans CRUD: GET/POST/PUT/DELETE /plans
+      3. Payment Request Management: GET /admin/payment-requests, POST /approve, /reject, /request-info
+      4. Agency Management: GET /admin/agencies, /suspend, /activate, /change-plan, /reset-password, /login-as, DELETE
+      5. Admin Dashboard: GET /admin/dashboard
+      6. Audit Log: GET /admin/audit
+      7. Support Tickets (SA side): POST /reply by super admin
+      8. Receipts: Full E2E test (requires SA approval)
+      
+      ❌ FAILED (1 test):
+      - "6th staff after upgrade" - Failed because payment request was not approved (no SA token), so agency remained on FREE plan
+      
+      RECOMMENDATION:
+      To test super admin endpoints, either:
+      1. Reset the database (drop all collections) and run tests again, OR
+      2. Provide super admin credentials (email + password) for existing super admin
+      
+      All super admin endpoints are marked as needs_retesting=true in test_result.md.
+      
+      CRITICAL: All agency-side functionality is working perfectly. The only untested features are super admin operations.

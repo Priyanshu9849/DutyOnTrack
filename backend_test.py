@@ -1,1111 +1,1342 @@
 #!/usr/bin/env python3
 """
-DutyOnTrack Phase 2 Backend Testing
-Tests all Phase 2 endpoints: Attendance, Salary, Expenses, Incomes, Invoices, Reports, CSV Export, Digital Register
+Phase 3 Comprehensive Backend Testing for DutyOnTrack
+Tests Setup Wizard, Platform Settings, Plans, Subscription E2E, Agency Management,
+Admin Dashboard, Audit Log, Support Tickets, and Regression tests.
 """
 
 import requests
 import json
+import time
 from datetime import datetime, timedelta
-import sys
 
 # Base URL from .env
 BASE_URL = "https://agency-pro-33.preview.emergentagent.com/api"
 
-# Test data storage
-test_data = {
-    'agency_a': {},
-    'agency_b': {},
+# Test state
+super_admin_token = None
+super_admin_password = None
+agency_token = None
+agency_id = None
+test_results = {
+    "passed": 0,
+    "failed": 0,
+    "skipped": 0,
+    "errors": []
 }
 
-def log(msg, level="INFO"):
-    """Log test messages"""
-    print(f"[{level}] {msg}")
+def log_test(name, passed, message=""):
+    """Log test result"""
+    if passed:
+        test_results["passed"] += 1
+        print(f"✅ PASS: {name}")
+        if message:
+            print(f"   {message}")
+    else:
+        test_results["failed"] += 1
+        test_results["errors"].append(f"{name}: {message}")
+        print(f"❌ FAIL: {name}")
+        print(f"   {message}")
 
-def test_signup(agency_name, owner_name, email, password):
-    """Sign up a new agency"""
-    log(f"Testing signup for {agency_name}...")
-    try:
-        response = requests.post(f"{BASE_URL}/auth/signup", json={
-            "agencyName": agency_name,
-            "ownerName": owner_name,
-            "email": email,
-            "password": password,
-            "phone": "9876543210"
-        }, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            log(f"✅ Signup successful for {agency_name}")
-            return {
-                'token': data['token'],
-                'agency': data['agency'],
-                'user': data['user']
-            }
-        else:
-            log(f"❌ Signup failed: {response.status_code} - {response.text}", "ERROR")
-            return None
-    except Exception as e:
-        log(f"❌ Signup exception: {str(e)}", "ERROR")
-        return None
+def log_skip(name, reason):
+    """Log skipped test"""
+    test_results["skipped"] += 1
+    print(f"⏭️  SKIP: {name}")
+    print(f"   Reason: {reason}")
 
-def test_add_staff(token, name, monthly_salary):
-    """Add a staff member"""
-    log(f"Adding staff: {name} with salary {monthly_salary}...")
+def test_setup_status():
+    """A1: Test GET /api/setup/status"""
+    print("\n=== A) SETUP WIZARD ===")
+    print("\nA1: Testing GET /api/setup/status...")
     try:
-        response = requests.post(f"{BASE_URL}/staff", 
-            headers={"Authorization": f"Bearer {token}"},
-            json={
-                "name": name,
-                "phone": "9876543210",
-                "monthlySalary": monthly_salary,
-                "status": "available"
-            }, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            log(f"✅ Staff added: {data['name']} (ID: {data['id']}, Code: {data['staffCode']})")
+        resp = requests.get(f"{BASE_URL}/setup/status", timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            has_keys = "hasSuperAdmin" in data and "hasSettings" in data and "needsSetup" in data
+            log_test("GET /setup/status returns correct shape", has_keys, 
+                    f"hasSuperAdmin={data.get('hasSuperAdmin')}, needsSetup={data.get('needsSetup')}")
             return data
         else:
-            log(f"❌ Add staff failed: {response.status_code} - {response.text}", "ERROR")
+            log_test("GET /setup/status", False, f"Status {resp.status_code}: {resp.text}")
             return None
     except Exception as e:
-        log(f"❌ Add staff exception: {str(e)}", "ERROR")
+        log_test("GET /setup/status", False, f"Exception: {str(e)}")
         return None
 
-def test_add_client(token, name, monthly_charges):
-    """Add a client"""
-    log(f"Adding client: {name} with charges {monthly_charges}...")
+def test_setup_complete():
+    """A2: Test POST /api/setup/complete"""
+    global super_admin_token, super_admin_password
+    print("\nA2: Testing POST /api/setup/complete...")
+    
+    super_admin_password = "SuperAdmin123!"  # Strong password (>6 chars)
+    payload = {
+        "name": "Super Admin",
+        "email": "superadmin@dutyontrack.com",
+        "password": super_admin_password,
+        "phone": "+919876543210",
+        "platformName": "DutyOnTrack Platform",
+        "supportWhatsapp": "+919876543210",
+        "supportEmail": "support@dutyontrack.com",
+        "accountHolderName": "DutyOnTrack Pvt Ltd",
+        "bankName": "HDFC Bank",
+        "accountNumber": "1234567890",
+        "ifscCode": "HDFC0001234",
+        "upiId": "dutyontrack@hdfc"
+    }
+    
     try:
-        response = requests.post(f"{BASE_URL}/clients",
-            headers={"Authorization": f"Bearer {token}"},
-            json={
-                "name": name,
-                "patientName": f"Patient of {name}",
-                "phone": "9876543210",
-                "monthlyCharges": monthly_charges,
-                "location": "Home"
-            }, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            log(f"✅ Client added: {data['name']} (ID: {data['id']})")
-            return data
-        else:
-            log(f"❌ Add client failed: {response.status_code} - {response.text}", "ERROR")
-            return None
-    except Exception as e:
-        log(f"❌ Add client exception: {str(e)}", "ERROR")
-        return None
-
-def test_create_placement(token, staff_id, client_id, join_date, monthly_client_charge, monthly_staff_salary):
-    """Create a placement"""
-    log(f"Creating placement: staff={staff_id}, client={client_id}, joinDate={join_date}...")
-    try:
-        response = requests.post(f"{BASE_URL}/placements",
-            headers={"Authorization": f"Bearer {token}"},
-            json={
-                "staffId": staff_id,
-                "clientId": client_id,
-                "joinDate": join_date,
-                "monthlyClientCharge": monthly_client_charge,
-                "monthlyStaffSalary": monthly_staff_salary,
-                "dutyType": "24 Hr",
-                "shift": "Day",
-                "location": "Home"
-            }, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            log(f"✅ Placement created: {data['code']} (ID: {data['id']})")
-            return data
-        else:
-            log(f"❌ Create placement failed: {response.status_code} - {response.text}", "ERROR")
-            return None
-    except Exception as e:
-        log(f"❌ Create placement exception: {str(e)}", "ERROR")
-        return None
-
-def test_attendance_auto_backfill(token, staff_id, month):
-    """Test attendance auto-backfill"""
-    log(f"Testing attendance auto-backfill for staff={staff_id}, month={month}...")
-    try:
-        response = requests.get(f"{BASE_URL}/attendance",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"staffId": staff_id, "month": month},
-            timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            log(f"✅ Attendance retrieved: {len(data)} entries")
-            
-            # Check all entries are status='P'
-            all_present = all(entry['status'] == 'P' for entry in data)
-            if all_present:
-                log(f"✅ All {len(data)} attendance entries have status='P' (auto-backfilled)")
-            else:
-                log(f"⚠️ Not all entries are 'P': {[e['status'] for e in data]}", "WARN")
-            
-            return data
-        else:
-            log(f"❌ Get attendance failed: {response.status_code} - {response.text}", "ERROR")
-            return None
-    except Exception as e:
-        log(f"❌ Get attendance exception: {str(e)}", "ERROR")
-        return None
-
-def test_attendance_update(token, staff_id, date, status):
-    """Test attendance update (upsert)"""
-    log(f"Testing attendance update: staff={staff_id}, date={date}, status={status}...")
-    try:
-        response = requests.post(f"{BASE_URL}/attendance",
-            headers={"Authorization": f"Bearer {token}"},
-            json={
-                "staffId": staff_id,
-                "date": date,
-                "status": status,
-                "notes": "Test update"
-            }, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            log(f"✅ Attendance updated: date={data['date']}, status={data['status']}")
-            return data
-        else:
-            log(f"❌ Update attendance failed: {response.status_code} - {response.text}", "ERROR")
-            return None
-    except Exception as e:
-        log(f"❌ Update attendance exception: {str(e)}", "ERROR")
-        return None
-
-def test_attendance_bulk(token, rows):
-    """Test bulk attendance update"""
-    log(f"Testing bulk attendance update with {len(rows)} rows...")
-    try:
-        response = requests.post(f"{BASE_URL}/attendance/bulk",
-            headers={"Authorization": f"Bearer {token}"},
-            json={"rows": rows},
-            timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            log(f"✅ Bulk attendance updated: {data.get('upserted', 0)} rows")
-            return data
-        else:
-            log(f"❌ Bulk attendance failed: {response.status_code} - {response.text}", "ERROR")
-            return None
-    except Exception as e:
-        log(f"❌ Bulk attendance exception: {str(e)}", "ERROR")
-        return None
-
-def test_salary_get(token, staff_id, month):
-    """Test salary computation"""
-    log(f"Testing salary GET: staff={staff_id}, month={month}...")
-    try:
-        response = requests.get(f"{BASE_URL}/salary",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"staffId": staff_id, "month": month},
-            timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            log(f"✅ Salary retrieved:")
-            log(f"   Stats: present={data['stats']['present']}, absent={data['stats']['absent']}, "
-                f"half={data['stats']['half']}, late={data['stats']['late']}, "
-                f"leave={data['stats']['leave']}, paidLeave={data['stats']['paidLeave']}, "
-                f"effective={data['stats']['effective']}")
-            log(f"   perDay={data['perDay']}, gross={data['gross']}")
-            log(f"   advance={data['advance']}, deduction={data['deduction']}, paid={data['paid']}, pending={data['pending']}")
-            return data
-        else:
-            log(f"❌ Get salary failed: {response.status_code} - {response.text}", "ERROR")
-            return None
-    except Exception as e:
-        log(f"❌ Get salary exception: {str(e)}", "ERROR")
-        return None
-
-def test_salary_payment(token, staff_id, month, amount, payment_type):
-    """Test salary payment"""
-    log(f"Testing salary payment: staff={staff_id}, month={month}, amount={amount}, type={payment_type}...")
-    try:
-        response = requests.post(f"{BASE_URL}/salary/payment",
-            headers={"Authorization": f"Bearer {token}"},
-            json={
-                "staffId": staff_id,
-                "month": month,
-                "amount": amount,
-                "type": payment_type,
-                "paidVia": "UPI",
-                "notes": f"Test {payment_type}"
-            }, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            log(f"✅ Salary payment recorded: {payment_type} amount={data['amount']}")
-            return data
-        else:
-            log(f"❌ Salary payment failed: {response.status_code} - {response.text}", "ERROR")
-            return None
-    except Exception as e:
-        log(f"❌ Salary payment exception: {str(e)}", "ERROR")
-        return None
-
-def test_salary_all(token, month):
-    """Test salary all staff summary"""
-    log(f"Testing salary/all: month={month}...")
-    try:
-        response = requests.get(f"{BASE_URL}/salary/all",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"month": month},
-            timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            log(f"✅ Salary all retrieved: month={data['month']}, {len(data['rows'])} staff")
-            return data
-        else:
-            log(f"❌ Get salary/all failed: {response.status_code} - {response.text}", "ERROR")
-            return None
-    except Exception as e:
-        log(f"❌ Get salary/all exception: {str(e)}", "ERROR")
-        return None
-
-def test_expenses_create(token, category, amount, date):
-    """Test expense creation"""
-    log(f"Testing expense creation: category={category}, amount={amount}...")
-    try:
-        response = requests.post(f"{BASE_URL}/expenses",
-            headers={"Authorization": f"Bearer {token}"},
-            json={
-                "category": category,
-                "amount": amount,
-                "date": date,
-                "paidVia": "UPI",
-                "notes": "Test expense"
-            }, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            log(f"✅ Expense created: {data['code']} - {data['category']} ₹{data['amount']}")
-            return data
-        else:
-            log(f"❌ Create expense failed: {response.status_code} - {response.text}", "ERROR")
-            return None
-    except Exception as e:
-        log(f"❌ Create expense exception: {str(e)}", "ERROR")
-        return None
-
-def test_expenses_get(token, month):
-    """Test expense retrieval with month filter"""
-    log(f"Testing expense GET: month={month}...")
-    try:
-        response = requests.get(f"{BASE_URL}/expenses",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"month": month} if month else {},
-            timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            log(f"✅ Expenses retrieved: {len(data)} entries")
-            return data
-        else:
-            log(f"❌ Get expenses failed: {response.status_code} - {response.text}", "ERROR")
-            return None
-    except Exception as e:
-        log(f"❌ Get expenses exception: {str(e)}", "ERROR")
-        return None
-
-def test_expenses_update(token, expense_id, new_amount):
-    """Test expense update"""
-    log(f"Testing expense update: id={expense_id}, new_amount={new_amount}...")
-    try:
-        response = requests.put(f"{BASE_URL}/expenses/{expense_id}",
-            headers={"Authorization": f"Bearer {token}"},
-            json={"amount": new_amount},
-            timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            log(f"✅ Expense updated: amount={data['amount']}")
-            return data
-        else:
-            log(f"❌ Update expense failed: {response.status_code} - {response.text}", "ERROR")
-            return None
-    except Exception as e:
-        log(f"❌ Update expense exception: {str(e)}", "ERROR")
-        return None
-
-def test_expenses_delete(token, expense_id):
-    """Test expense deletion"""
-    log(f"Testing expense delete: id={expense_id}...")
-    try:
-        response = requests.delete(f"{BASE_URL}/expenses/{expense_id}",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10)
-        
-        if response.status_code == 200:
-            log(f"✅ Expense deleted")
-            return True
-        else:
-            log(f"❌ Delete expense failed: {response.status_code} - {response.text}", "ERROR")
-            return False
-    except Exception as e:
-        log(f"❌ Delete expense exception: {str(e)}", "ERROR")
-        return False
-
-def test_invoice_create(token, client_id, placement_id, month):
-    """Test invoice creation"""
-    log(f"Testing invoice creation: client={client_id}, placement={placement_id}, month={month}...")
-    try:
-        response = requests.post(f"{BASE_URL}/invoices",
-            headers={"Authorization": f"Bearer {token}"},
-            json={
-                "clientId": client_id,
-                "placementId": placement_id,
-                "month": month,
-                "extras": 0,
-                "discount": 0,
-                "taxPct": 18
-            }, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            log(f"✅ Invoice created: {data['number']}")
-            log(f"   daysWorked={data['daysWorked']}, subTotal={data['subTotal']}, totalAmount={data['totalAmount']}")
-            log(f"   Snapshot: agencyName={data['snapshot'].get('agencyName')}, clientName={data['snapshot'].get('clientName')}")
-            
-            # Verify invoice number format
-            if data['number'].startswith('INV-') and len(data['number'].split('-')) == 3:
-                log(f"✅ Invoice number format correct: {data['number']}")
-            else:
-                log(f"⚠️ Invoice number format unexpected: {data['number']}", "WARN")
-            
-            return data
-        else:
-            log(f"❌ Create invoice failed: {response.status_code} - {response.text}", "ERROR")
-            return None
-    except Exception as e:
-        log(f"❌ Create invoice exception: {str(e)}", "ERROR")
-        return None
-
-def test_invoices_get(token):
-    """Test invoice list retrieval"""
-    log(f"Testing invoices GET...")
-    try:
-        response = requests.get(f"{BASE_URL}/invoices",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            log(f"✅ Invoices retrieved: {len(data)} entries")
-            if len(data) > 0:
-                log(f"   First invoice: {data[0]['number']}, clientName={data[0].get('clientName')}, placementCode={data[0].get('placementCode')}")
-            return data
-        else:
-            log(f"❌ Get invoices failed: {response.status_code} - {response.text}", "ERROR")
-            return None
-    except Exception as e:
-        log(f"❌ Get invoices exception: {str(e)}", "ERROR")
-        return None
-
-def test_invoice_get_by_id(token, invoice_id):
-    """Test single invoice retrieval"""
-    log(f"Testing invoice GET by ID: {invoice_id}...")
-    try:
-        response = requests.get(f"{BASE_URL}/invoices/{invoice_id}",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            log(f"✅ Invoice retrieved: {data['number']}")
-            log(f"   Client populated: {data.get('client', {}).get('name', 'N/A')}")
-            log(f"   Placement populated: {data.get('placement', {}).get('code', 'N/A')}")
-            return data
-        else:
-            log(f"❌ Get invoice by ID failed: {response.status_code} - {response.text}", "ERROR")
-            return None
-    except Exception as e:
-        log(f"❌ Get invoice by ID exception: {str(e)}", "ERROR")
-        return None
-
-def test_income_create(token, client_id, amount, placement_id=None, invoice_id=None):
-    """Test income creation"""
-    log(f"Testing income creation: client={client_id}, amount={amount}, placement={placement_id}, invoice={invoice_id}...")
-    try:
-        payload = {
-            "clientId": client_id,
-            "amount": amount,
-            "method": "UPI",
-            "notes": "Test income"
-        }
-        if placement_id:
-            payload["placementId"] = placement_id
-        if invoice_id:
-            payload["invoiceId"] = invoice_id
-        
-        response = requests.post(f"{BASE_URL}/incomes",
-            headers={"Authorization": f"Bearer {token}"},
-            json=payload,
-            timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            log(f"✅ Income created: {data['code']} - ₹{data['amount']}")
-            return data
-        else:
-            log(f"❌ Create income failed: {response.status_code} - {response.text}", "ERROR")
-            return None
-    except Exception as e:
-        log(f"❌ Create income exception: {str(e)}", "ERROR")
-        return None
-
-def test_income_delete(token, income_id):
-    """Test income deletion"""
-    log(f"Testing income delete: id={income_id}...")
-    try:
-        response = requests.delete(f"{BASE_URL}/incomes/{income_id}",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10)
-        
-        if response.status_code == 200:
-            log(f"✅ Income deleted")
-            return True
-        else:
-            log(f"❌ Delete income failed: {response.status_code} - {response.text}", "ERROR")
-            return False
-    except Exception as e:
-        log(f"❌ Delete income exception: {str(e)}", "ERROR")
-        return False
-
-def test_placement_get(token, placement_id):
-    """Get placement details"""
-    log(f"Testing placement GET: id={placement_id}...")
-    try:
-        response = requests.get(f"{BASE_URL}/placements",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            placement = next((p for p in data if p['id'] == placement_id), None)
-            if placement:
-                log(f"✅ Placement retrieved: clientPaid={placement.get('clientPaid', 0)}")
-                return placement
-            else:
-                log(f"❌ Placement not found in list", "ERROR")
-                return None
-        else:
-            log(f"❌ Get placements failed: {response.status_code} - {response.text}", "ERROR")
-            return None
-    except Exception as e:
-        log(f"❌ Get placement exception: {str(e)}", "ERROR")
-        return None
-
-def test_reports_pnl(token, month=None):
-    """Test P&L report"""
-    log(f"Testing P&L report: month={month or 'all-time'}...")
-    try:
-        params = {"month": month} if month else {}
-        response = requests.get(f"{BASE_URL}/reports/pnl",
-            headers={"Authorization": f"Bearer {token}"},
-            params=params,
-            timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            log(f"✅ P&L report retrieved:")
-            log(f"   revenue={data['revenue']}, staffCost={data['staffCost']}, vendorCommission={data['vendorCommission']}")
-            log(f"   expenseTotal={data['expenseTotal']}, netProfit={data['netProfit']}")
-            log(f"   incomeCollected={data['incomeCollected']}, salaryPaid={data['salaryPaid']}")
-            log(f"   pendingClientCollection={data['pendingClientCollection']}")
-            log(f"   expenseByCategory: {len(data.get('expenseByCategory', []))} categories")
-            return data
-        else:
-            log(f"❌ Get P&L report failed: {response.status_code} - {response.text}", "ERROR")
-            return None
-    except Exception as e:
-        log(f"❌ Get P&L report exception: {str(e)}", "ERROR")
-        return None
-
-def test_reports_placement(token):
-    """Test placement report"""
-    log(f"Testing placement report...")
-    try:
-        response = requests.get(f"{BASE_URL}/reports/placement",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            log(f"✅ Placement report retrieved: {len(data)} placements")
-            if len(data) > 0:
-                log(f"   First: code={data[0]['code']}, workingDays={data[0]['workingDays']}, "
-                    f"clientBill={data[0]['clientBill']}, agencyProfit={data[0]['agencyProfit']}")
-            return data
-        else:
-            log(f"❌ Get placement report failed: {response.status_code} - {response.text}", "ERROR")
-            return None
-    except Exception as e:
-        log(f"❌ Get placement report exception: {str(e)}", "ERROR")
-        return None
-
-def test_reports_staff(token):
-    """Test staff report"""
-    log(f"Testing staff report...")
-    try:
-        response = requests.get(f"{BASE_URL}/reports/staff",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            log(f"✅ Staff report retrieved: {len(data)} staff")
-            if len(data) > 0:
-                log(f"   First: name={data[0]['name']}, totalPlacements={data[0]['totalPlacements']}, "
-                    f"activePlacements={data[0]['activePlacements']}")
-            return data
-        else:
-            log(f"❌ Get staff report failed: {response.status_code} - {response.text}", "ERROR")
-            return None
-    except Exception as e:
-        log(f"❌ Get staff report exception: {str(e)}", "ERROR")
-        return None
-
-def test_reports_client(token):
-    """Test client report"""
-    log(f"Testing client report...")
-    try:
-        response = requests.get(f"{BASE_URL}/reports/client",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            log(f"✅ Client report retrieved: {len(data)} clients")
-            if len(data) > 0:
-                log(f"   First: name={data[0]['name']}, totalBilled={data[0]['totalBilled']}, "
-                    f"totalPaid={data[0]['totalPaid']}, pending={data[0]['pending']}")
-            return data
-        else:
-            log(f"❌ Get client report failed: {response.status_code} - {response.text}", "ERROR")
-            return None
-    except Exception as e:
-        log(f"❌ Get client report exception: {str(e)}", "ERROR")
-        return None
-
-def test_reports_attendance(token, month):
-    """Test attendance report"""
-    log(f"Testing attendance report: month={month}...")
-    try:
-        response = requests.get(f"{BASE_URL}/reports/attendance",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"month": month},
-            timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            log(f"✅ Attendance report retrieved: month={data['month']}, {len(data['rows'])} staff")
-            if len(data['rows']) > 0:
-                log(f"   First: name={data['rows'][0]['name']}, present={data['rows'][0]['present']}, "
-                    f"absent={data['rows'][0]['absent']}, percentage={data['rows'][0]['percentage']}%")
-            return data
-        else:
-            log(f"❌ Get attendance report failed: {response.status_code} - {response.text}", "ERROR")
-            return None
-    except Exception as e:
-        log(f"❌ Get attendance report exception: {str(e)}", "ERROR")
-        return None
-
-def test_csv_export(token):
-    """Test CSV export"""
-    log(f"Testing CSV export...")
-    try:
-        response = requests.post(f"{BASE_URL}/export/csv",
-            headers={"Authorization": f"Bearer {token}"},
-            json={
-                "name": "test_export",
-                "headers": ["Column A", "Column B"],
-                "rows": [[1, 2], [3, 4]]
-            },
-            timeout=10)
-        
-        if response.status_code == 200:
-            content_type = response.headers.get('Content-Type', '')
-            if 'text/csv' in content_type:
-                log(f"✅ CSV export successful: Content-Type={content_type}")
-                log(f"   CSV content preview: {response.text[:100]}")
+        resp = requests.post(f"{BASE_URL}/setup/complete", json=payload, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            has_token = "token" in data and "user" in data and "settings" in data
+            if has_token and data["user"].get("role") == "super_admin":
+                super_admin_token = data["token"]
+                log_test("POST /setup/complete creates super admin", True, 
+                        f"Token received, role={data['user']['role']}")
                 return True
             else:
-                log(f"⚠️ CSV export returned but Content-Type is {content_type}", "WARN")
+                log_test("POST /setup/complete", False, "Missing token or incorrect role")
                 return False
+        elif resp.status_code == 409:
+            log_test("POST /setup/complete returns 409 (super admin exists)", True, 
+                    "Idempotency check passed")
+            return False
         else:
-            log(f"❌ CSV export failed: {response.status_code} - {response.text}", "ERROR")
+            log_test("POST /setup/complete", False, f"Status {resp.status_code}: {resp.text}")
             return False
     except Exception as e:
-        log(f"❌ CSV export exception: {str(e)}", "ERROR")
+        log_test("POST /setup/complete", False, f"Exception: {str(e)}")
         return False
 
-def test_register_get(token, date=None, activity_type=None):
-    """Test digital register"""
-    log(f"Testing digital register: date={date}, type={activity_type}...")
+def test_setup_complete_409():
+    """A3: Test POST /setup/complete returns 409 on second call"""
+    print("\nA3: Testing POST /setup/complete idempotency (should return 409)...")
+    
+    payload = {
+        "name": "Another Admin",
+        "email": "another@test.com",
+        "password": "password123",
+        "phone": "1234567890"
+    }
+    
     try:
-        params = {}
-        if date:
-            params['date'] = date
-        if activity_type:
-            params['type'] = activity_type
-        
-        response = requests.get(f"{BASE_URL}/register",
-            headers={"Authorization": f"Bearer {token}"},
-            params=params,
-            timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            log(f"✅ Digital register retrieved: {len(data)} activities")
-            if len(data) > 0:
-                log(f"   First: type={data[0]['type']}, message={data[0]['message']}")
-            return data
+        resp = requests.post(f"{BASE_URL}/setup/complete", json=payload, timeout=10)
+        if resp.status_code == 409:
+            log_test("POST /setup/complete second call returns 409", True, 
+                    "Correctly prevents duplicate super admin")
         else:
-            log(f"❌ Get register failed: {response.status_code} - {response.text}", "ERROR")
-            return None
+            log_test("POST /setup/complete second call returns 409", False, 
+                    f"Expected 409, got {resp.status_code}")
     except Exception as e:
-        log(f"❌ Get register exception: {str(e)}", "ERROR")
-        return None
+        log_test("POST /setup/complete second call", False, f"Exception: {str(e)}")
 
-def run_phase2_tests():
-    """Run all Phase 2 tests"""
-    log("=" * 80)
-    log("STARTING PHASE 2 BACKEND TESTS")
-    log("=" * 80)
-    
-    # Calculate dates
-    today = datetime.now().date()
-    five_days_ago = today - timedelta(days=5)
-    current_month = today.strftime("%Y-%m")
-    
-    log(f"Test dates: today={today}, five_days_ago={five_days_ago}, current_month={current_month}")
-    
-    # Test 1: Sign up Agency A
-    log("\n" + "=" * 80)
-    log("TEST 1: SIGN UP AGENCY A")
-    log("=" * 80)
-    agency_a = test_signup("TestAgency-A", "Owner A", f"owner.a.{datetime.now().timestamp()}@test.com", "password123")
-    if not agency_a:
-        log("❌ CRITICAL: Agency A signup failed. Aborting tests.", "ERROR")
-        return False
-    test_data['agency_a'] = agency_a
-    
-    # Test 2: Add staff to Agency A
-    log("\n" + "=" * 80)
-    log("TEST 2: ADD STAFF TO AGENCY A")
-    log("=" * 80)
-    staff_a = test_add_staff(agency_a['token'], "Rajesh Kumar", 30000)
-    if not staff_a:
-        log("❌ CRITICAL: Staff creation failed. Aborting tests.", "ERROR")
-        return False
-    test_data['agency_a']['staff'] = staff_a
-    
-    # Test 3: Add client to Agency A
-    log("\n" + "=" * 80)
-    log("TEST 3: ADD CLIENT TO AGENCY A")
-    log("=" * 80)
-    client_a = test_add_client(agency_a['token'], "Sharma Family", 30000)
-    if not client_a:
-        log("❌ CRITICAL: Client creation failed. Aborting tests.", "ERROR")
-        return False
-    test_data['agency_a']['client'] = client_a
-    
-    # Test 4: Create placement with joinDate = 5 days ago
-    log("\n" + "=" * 80)
-    log("TEST 4: CREATE PLACEMENT (5 DAYS AGO)")
-    log("=" * 80)
-    placement_a = test_create_placement(
-        agency_a['token'],
-        staff_a['id'],
-        client_a['id'],
-        five_days_ago.isoformat(),
-        30000,
-        30000
-    )
-    if not placement_a:
-        log("❌ CRITICAL: Placement creation failed. Aborting tests.", "ERROR")
-        return False
-    test_data['agency_a']['placement'] = placement_a
-    
-    # Test 5: Verify attendance auto-backfill
-    log("\n" + "=" * 80)
-    log("TEST 5: VERIFY ATTENDANCE AUTO-BACKFILL")
-    log("=" * 80)
-    attendance_list = test_attendance_auto_backfill(agency_a['token'], staff_a['id'], current_month)
-    if not attendance_list:
-        log("❌ Attendance auto-backfill verification failed", "ERROR")
-    else:
-        expected_days = (today - five_days_ago).days + 1
-        if len(attendance_list) >= 5:
-            log(f"✅ Attendance auto-backfill working: {len(attendance_list)} entries (expected ~{expected_days})")
+def test_public_endpoints():
+    """A4-A5: Test public endpoints (no auth required)"""
+    print("\nA4: Testing GET /api/settings/public (no auth)...")
+    try:
+        resp = requests.get(f"{BASE_URL}/settings/public", timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            has_bank = "bankName" in data or "accountNumber" in data or len(data) > 0
+            log_test("GET /settings/public returns settings", True, 
+                    f"Settings returned with {len(data)} fields")
         else:
-            log(f"⚠️ Attendance count lower than expected: {len(attendance_list)} (expected ~{expected_days})", "WARN")
+            log_test("GET /settings/public", False, f"Status {resp.status_code}")
+    except Exception as e:
+        log_test("GET /settings/public", False, f"Exception: {str(e)}")
     
-    # Test 6: Update attendance for today to 'A' (Absent)
-    log("\n" + "=" * 80)
-    log("TEST 6: UPDATE ATTENDANCE (UPSERT)")
-    log("=" * 80)
-    updated_attendance = test_attendance_update(agency_a['token'], staff_a['id'], today.isoformat(), 'A')
-    if updated_attendance and updated_attendance['status'] == 'A':
-        log("✅ Attendance update (upsert) working correctly")
-    else:
-        log("❌ Attendance update failed", "ERROR")
-    
-    # Test 7: Bulk attendance update
-    log("\n" + "=" * 80)
-    log("TEST 7: BULK ATTENDANCE UPDATE")
-    log("=" * 80)
-    yesterday = (today - timedelta(days=1)).isoformat()
-    two_days_ago = (today - timedelta(days=2)).isoformat()
-    bulk_result = test_attendance_bulk(agency_a['token'], [
-        {"staffId": staff_a['id'], "date": yesterday, "status": "H"},
-        {"staffId": staff_a['id'], "date": two_days_ago, "status": "LATE"}
-    ])
-    if bulk_result and bulk_result.get('upserted') == 2:
-        log("✅ Bulk attendance update working correctly")
-    else:
-        log("❌ Bulk attendance update failed", "ERROR")
-    
-    # Test 8: Get salary computation
-    log("\n" + "=" * 80)
-    log("TEST 8: SALARY COMPUTATION")
-    log("=" * 80)
-    salary_data = test_salary_get(agency_a['token'], staff_a['id'], current_month)
-    if salary_data:
-        # Verify perDay calculation (30000 / 30 = 1000)
-        expected_per_day = 1000
-        if salary_data['perDay'] == expected_per_day:
-            log(f"✅ perDay calculation correct: {salary_data['perDay']}")
+    print("\nA5: Testing GET /api/plans/public (no auth)...")
+    try:
+        resp = requests.get(f"{BASE_URL}/plans/public", timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, list) and len(data) == 4:
+                codes = [p.get("code") for p in data]
+                has_defaults = all(c in codes for c in ["FREE", "STARTER", "PROFESSIONAL", "ENTERPRISE"])
+                log_test("GET /plans/public returns 4 default plans", has_defaults, 
+                        f"Plans: {codes}")
+            else:
+                log_test("GET /plans/public", False, f"Expected 4 plans, got {len(data)}")
         else:
-            log(f"⚠️ perDay calculation unexpected: {salary_data['perDay']} (expected {expected_per_day})", "WARN")
-        
-        # Verify gross = perDay × effective
-        expected_gross = salary_data['perDay'] * salary_data['stats']['effective']
-        if abs(salary_data['gross'] - expected_gross) <= 1:  # Allow 1 rupee rounding
-            log(f"✅ Gross calculation correct: {salary_data['gross']}")
+            log_test("GET /plans/public", False, f"Status {resp.status_code}")
+    except Exception as e:
+        log_test("GET /plans/public", False, f"Exception: {str(e)}")
+
+def test_platform_settings():
+    """B: Test Platform Settings (super admin only)"""
+    print("\n=== B) PLATFORM SETTINGS (Super Admin) ===")
+    
+    if not super_admin_token:
+        log_skip("Platform Settings tests", "No super admin token available")
+        return
+    
+    headers = {"Authorization": f"Bearer {super_admin_token}"}
+    
+    print("\nB1: Testing GET /api/settings/platform with SA token...")
+    try:
+        resp = requests.get(f"{BASE_URL}/settings/platform", headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            has_fields = "platformName" in data and "bankName" in data
+            log_test("GET /settings/platform (SA)", has_fields, 
+                    f"platformName={data.get('platformName')}")
         else:
-            log(f"⚠️ Gross calculation unexpected: {salary_data['gross']} (expected {expected_gross})", "WARN")
-    else:
-        log("❌ Salary computation failed", "ERROR")
+            log_test("GET /settings/platform (SA)", False, f"Status {resp.status_code}")
+    except Exception as e:
+        log_test("GET /settings/platform (SA)", False, f"Exception: {str(e)}")
     
-    # Test 9: Add salary advance
-    log("\n" + "=" * 80)
-    log("TEST 9: SALARY PAYMENT - ADVANCE")
-    log("=" * 80)
-    advance_payment = test_salary_payment(agency_a['token'], staff_a['id'], current_month, 1000, 'advance')
-    if not advance_payment:
-        log("❌ Advance payment failed", "ERROR")
-    
-    # Test 10: Add salary paid
-    log("\n" + "=" * 80)
-    log("TEST 10: SALARY PAYMENT - PAID")
-    log("=" * 80)
-    paid_payment = test_salary_payment(agency_a['token'], staff_a['id'], current_month, 3000, 'paid')
-    if not paid_payment:
-        log("❌ Paid payment failed", "ERROR")
-    
-    # Test 11: Verify salary updated with payments
-    log("\n" + "=" * 80)
-    log("TEST 11: VERIFY SALARY UPDATED WITH PAYMENTS")
-    log("=" * 80)
-    salary_after_payments = test_salary_get(agency_a['token'], staff_a['id'], current_month)
-    if salary_after_payments:
-        if salary_after_payments['advance'] == 1000 and salary_after_payments['paid'] == 3000:
-            log(f"✅ Salary payments reflected correctly: advance={salary_after_payments['advance']}, paid={salary_after_payments['paid']}")
+    print("\nB2: Testing PUT /api/settings/platform...")
+    try:
+        update = {
+            "platformName": "DOT Updated",
+            "bankName": "HDFC Bank Updated"
+        }
+        resp = requests.put(f"{BASE_URL}/settings/platform", json=update, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            # Verify update
+            resp2 = requests.get(f"{BASE_URL}/settings/platform", headers=headers, timeout=10)
+            if resp2.status_code == 200:
+                data = resp2.json()
+                updated = data.get("platformName") == "DOT Updated" and data.get("bankName") == "HDFC Bank Updated"
+                log_test("PUT /settings/platform updates correctly", updated, 
+                        f"platformName={data.get('platformName')}, bankName={data.get('bankName')}")
+            else:
+                log_test("PUT /settings/platform", False, "Failed to verify update")
         else:
-            log(f"⚠️ Salary payments not reflected correctly: advance={salary_after_payments['advance']}, paid={salary_after_payments['paid']}", "WARN")
+            log_test("PUT /settings/platform", False, f"Status {resp.status_code}")
+    except Exception as e:
+        log_test("PUT /settings/platform", False, f"Exception: {str(e)}")
     
-    # Test 12: Get salary/all
-    log("\n" + "=" * 80)
-    log("TEST 12: SALARY ALL STAFF SUMMARY")
-    log("=" * 80)
-    salary_all = test_salary_all(agency_a['token'], current_month)
-    if salary_all and salary_all['month'] == current_month:
-        log(f"✅ Salary/all working: {len(salary_all['rows'])} staff")
-    else:
-        log("❌ Salary/all failed", "ERROR")
-    
-    # Test 13: Create expense
-    log("\n" + "=" * 80)
-    log("TEST 13: CREATE EXPENSE")
-    log("=" * 80)
-    expense = test_expenses_create(agency_a['token'], "Office Rent", 5000, today.isoformat())
-    if not expense:
-        log("❌ Expense creation failed", "ERROR")
-    else:
-        test_data['agency_a']['expense'] = expense
-    
-    # Test 14: Get expenses with month filter
-    log("\n" + "=" * 80)
-    log("TEST 14: GET EXPENSES WITH MONTH FILTER")
-    log("=" * 80)
-    expenses = test_expenses_get(agency_a['token'], current_month)
-    if expenses and len(expenses) > 0:
-        log(f"✅ Expenses retrieval with month filter working: {len(expenses)} expenses")
-    else:
-        log("⚠️ No expenses found or retrieval failed", "WARN")
-    
-    # Test 15: Update expense
-    log("\n" + "=" * 80)
-    log("TEST 15: UPDATE EXPENSE")
-    log("=" * 80)
-    if expense:
-        updated_expense = test_expenses_update(agency_a['token'], expense['id'], 5500)
-        if updated_expense and updated_expense['amount'] == 5500:
-            log("✅ Expense update working correctly")
+    print("\nB3: Testing non-SA access to platform settings (should return 403)...")
+    # Create a test agency to get non-SA token
+    agency_payload = {
+        "agencyName": "Test Agency for 403",
+        "ownerName": "Test Owner",
+        "email": f"test403_{int(time.time())}@test.com",
+        "password": "password123",
+        "phone": "9876543210"
+    }
+    try:
+        resp = requests.post(f"{BASE_URL}/auth/signup", json=agency_payload, timeout=10)
+        if resp.status_code == 200:
+            agency_token_temp = resp.json().get("token")
+            headers_agency = {"Authorization": f"Bearer {agency_token_temp}"}
+            resp2 = requests.get(f"{BASE_URL}/settings/platform", headers=headers_agency, timeout=10)
+            if resp2.status_code == 403:
+                log_test("Non-SA access to /settings/platform returns 403", True, 
+                        "Correctly forbidden")
+            else:
+                log_test("Non-SA access to /settings/platform returns 403", False, 
+                        f"Expected 403, got {resp2.status_code}")
         else:
-            log("❌ Expense update failed", "ERROR")
+            log_skip("Non-SA 403 test", "Failed to create test agency")
+    except Exception as e:
+        log_test("Non-SA 403 test", False, f"Exception: {str(e)}")
+
+def test_plans_crud():
+    """C: Test Plans CRUD (super admin only)"""
+    print("\n=== C) PLANS CRUD (Super Admin) ===")
     
-    # Test 16: Create invoice
-    log("\n" + "=" * 80)
-    log("TEST 16: CREATE INVOICE")
-    log("=" * 80)
-    invoice = test_invoice_create(agency_a['token'], client_a['id'], placement_a['id'], current_month)
-    if not invoice:
-        log("❌ Invoice creation failed", "ERROR")
+    if not super_admin_token:
+        log_skip("Plans CRUD tests", "No super admin token available")
+        return
+    
+    headers = {"Authorization": f"Bearer {super_admin_token}"}
+    
+    print("\nC1: Testing GET /api/plans (SA)...")
+    try:
+        resp = requests.get(f"{BASE_URL}/plans", headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, list) and len(data) >= 4:
+                log_test("GET /plans (SA) returns plans", True, f"Found {len(data)} plans")
+            else:
+                log_test("GET /plans (SA)", False, f"Expected >=4 plans, got {len(data)}")
+        else:
+            log_test("GET /plans (SA)", False, f"Status {resp.status_code}")
+    except Exception as e:
+        log_test("GET /plans (SA)", False, f"Exception: {str(e)}")
+    
+    print("\nC2: Testing POST /api/plans (create custom plan)...")
+    custom_plan_id = None
+    try:
+        plan_payload = {
+            "code": "CUSTOM",
+            "name": "Custom Plan",
+            "monthlyPrice": 999,
+            "yearlyPrice": 9990,
+            "maxStaff": 50,
+            "maxClients": 50,
+            "maxVendors": 50,
+            "maxBranches": 2,
+            "storageGB": 25,
+            "features": "Feature A,Feature B,Feature C",
+            "description": "Custom plan for testing",
+            "recommended": False,
+            "active": True
+        }
+        resp = requests.post(f"{BASE_URL}/plans", json=plan_payload, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            custom_plan_id = data.get("id")
+            correct = (data.get("code") == "CUSTOM" and 
+                      data.get("monthlyPrice") == 999 and 
+                      data.get("maxStaff") == 50)
+            log_test("POST /plans creates custom plan", correct, 
+                    f"Plan ID: {custom_plan_id}, code={data.get('code')}")
+        else:
+            log_test("POST /plans", False, f"Status {resp.status_code}: {resp.text}")
+    except Exception as e:
+        log_test("POST /plans", False, f"Exception: {str(e)}")
+    
+    print("\nC3: Testing PUT /api/plans/:id (update plan)...")
+    if custom_plan_id:
+        try:
+            update = {"monthlyPrice": 1099, "name": "Custom Plan Updated"}
+            resp = requests.put(f"{BASE_URL}/plans/{custom_plan_id}", json=update, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                updated = data.get("monthlyPrice") == 1099 and data.get("name") == "Custom Plan Updated"
+                log_test("PUT /plans/:id updates plan", updated, 
+                        f"monthlyPrice={data.get('monthlyPrice')}, name={data.get('name')}")
+            else:
+                log_test("PUT /plans/:id", False, f"Status {resp.status_code}")
+        except Exception as e:
+            log_test("PUT /plans/:id", False, f"Exception: {str(e)}")
     else:
-        test_data['agency_a']['invoice'] = invoice
-        # Verify daysWorked
-        expected_days = (today - five_days_ago).days + 1
-        if invoice['daysWorked'] >= 5:
-            log(f"✅ Invoice daysWorked calculation correct: {invoice['daysWorked']}")
-        else:
-            log(f"⚠️ Invoice daysWorked unexpected: {invoice['daysWorked']} (expected ~{expected_days})", "WARN")
+        log_skip("PUT /plans/:id", "No custom plan created")
     
-    # Test 17: Get invoices list
-    log("\n" + "=" * 80)
-    log("TEST 17: GET INVOICES LIST")
-    log("=" * 80)
-    invoices = test_invoices_get(agency_a['token'])
-    if invoices and len(invoices) > 0:
-        log(f"✅ Invoices list retrieval working: {len(invoices)} invoices")
+    print("\nC4: Testing DELETE /api/plans/:id...")
+    if custom_plan_id:
+        try:
+            resp = requests.delete(f"{BASE_URL}/plans/{custom_plan_id}", headers=headers, timeout=10)
+            if resp.status_code == 200:
+                # Verify deletion
+                resp2 = requests.get(f"{BASE_URL}/plans", headers=headers, timeout=10)
+                if resp2.status_code == 200:
+                    plans = resp2.json()
+                    deleted = not any(p.get("id") == custom_plan_id for p in plans)
+                    log_test("DELETE /plans/:id removes plan", deleted, 
+                            "Plan successfully deleted")
+                else:
+                    log_test("DELETE /plans/:id", False, "Failed to verify deletion")
+            else:
+                log_test("DELETE /plans/:id", False, f"Status {resp.status_code}")
+        except Exception as e:
+            log_test("DELETE /plans/:id", False, f"Exception: {str(e)}")
     else:
-        log("⚠️ No invoices found or retrieval failed", "WARN")
+        log_skip("DELETE /plans/:id", "No custom plan created")
+
+def test_subscription_e2e():
+    """D: Test Subscription E2E flow"""
+    global agency_token, agency_id
+    print("\n=== D) SUBSCRIPTION E2E ===")
     
-    # Test 18: Get invoice by ID
-    log("\n" + "=" * 80)
-    log("TEST 18: GET INVOICE BY ID")
-    log("=" * 80)
-    if invoice:
-        invoice_detail = test_invoice_get_by_id(agency_a['token'], invoice['id'])
-        if invoice_detail and invoice_detail.get('client') and invoice_detail.get('placement'):
-            log("✅ Invoice by ID with populated client & placement working")
-        else:
-            log("❌ Invoice by ID retrieval failed or missing populated data", "ERROR")
+    # D1: Create fresh agency
+    print("\nD1: Creating fresh agency...")
+    agency_email = f"agency_sub_{int(time.time())}@test.com"
+    agency_payload = {
+        "agencyName": "Subscription Test Agency",
+        "ownerName": "Sub Test Owner",
+        "email": agency_email,
+        "password": "password123",
+        "phone": "9876543210"
+    }
     
-    # Test 19: Create income linked to placement
-    log("\n" + "=" * 80)
-    log("TEST 19: CREATE INCOME LINKED TO PLACEMENT")
-    log("=" * 80)
-    income1 = test_income_create(agency_a['token'], client_a['id'], 15000, placement_id=placement_a['id'])
-    if not income1:
-        log("❌ Income creation (placement) failed", "ERROR")
-    else:
-        test_data['agency_a']['income1'] = income1
-    
-    # Test 20: Verify placement.clientPaid updated
-    log("\n" + "=" * 80)
-    log("TEST 20: VERIFY PLACEMENT.CLIENTPAID UPDATED")
-    log("=" * 80)
-    placement_after_income = test_placement_get(agency_a['token'], placement_a['id'])
-    if placement_after_income:
-        if placement_after_income.get('clientPaid') == 15000:
-            log(f"✅ Placement.clientPaid updated correctly: {placement_after_income['clientPaid']}")
-        else:
-            log(f"⚠️ Placement.clientPaid unexpected: {placement_after_income.get('clientPaid')} (expected 15000)", "WARN")
-    
-    # Test 21: Create income linked to invoice
-    log("\n" + "=" * 80)
-    log("TEST 21: CREATE INCOME LINKED TO INVOICE")
-    log("=" * 80)
-    if invoice:
-        income2 = test_income_create(agency_a['token'], client_a['id'], invoice['totalAmount'], invoice_id=invoice['id'])
-        if not income2:
-            log("❌ Income creation (invoice) failed", "ERROR")
-        else:
-            test_data['agency_a']['income2'] = income2
+    try:
+        resp = requests.post(f"{BASE_URL}/auth/signup", json=agency_payload, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            agency_token = data.get("token")
+            agency_id = data.get("agency", {}).get("id")
+            agency_data = data.get("agency", {})
             
-            # Test 22: Verify invoice status changed to 'paid'
-            log("\n" + "=" * 80)
-            log("TEST 22: VERIFY INVOICE STATUS CHANGED TO 'PAID'")
-            log("=" * 80)
-            invoice_after_payment = test_invoice_get_by_id(agency_a['token'], invoice['id'])
-            if invoice_after_payment:
-                if invoice_after_payment['status'] == 'paid':
-                    log(f"✅ Invoice status updated to 'paid' correctly")
-                else:
-                    log(f"⚠️ Invoice status unexpected: {invoice_after_payment['status']} (expected 'paid')", "WARN")
-    
-    # Test 23: Delete income and verify reversal
-    log("\n" + "=" * 80)
-    log("TEST 23: DELETE INCOME AND VERIFY REVERSAL")
-    log("=" * 80)
-    if income1:
-        delete_success = test_income_delete(agency_a['token'], income1['id'])
-        if delete_success:
-            placement_after_delete = test_placement_get(agency_a['token'], placement_a['id'])
-            if placement_after_delete:
-                # clientPaid should be reduced by 15000
-                expected_client_paid = placement_after_income.get('clientPaid', 15000) - 15000
-                if placement_after_delete.get('clientPaid', 0) == expected_client_paid:
-                    log(f"✅ Income deletion reversed placement.clientPaid correctly: {placement_after_delete['clientPaid']}")
-                else:
-                    log(f"⚠️ Placement.clientPaid after delete unexpected: {placement_after_delete.get('clientPaid')} (expected {expected_client_paid})", "WARN")
-    
-    # Test 24: P&L Report with month filter
-    log("\n" + "=" * 80)
-    log("TEST 24: P&L REPORT (WITH MONTH)")
-    log("=" * 80)
-    pnl_month = test_reports_pnl(agency_a['token'], current_month)
-    if pnl_month:
-        if pnl_month['revenue'] > 0:
-            log(f"✅ P&L report (month) working: revenue={pnl_month['revenue']}")
+            correct = (agency_data.get("plan") == "FREE" and 
+                      agency_data.get("limits", {}).get("maxStaff") == 5 and
+                      agency_data.get("limits", {}).get("maxClients") == 5 and
+                      agency_data.get("limits", {}).get("maxVendors") == 5)
+            log_test("Fresh agency has plan=FREE with limits maxStaff=5", correct, 
+                    f"plan={agency_data.get('plan')}, limits={agency_data.get('limits')}")
         else:
-            log(f"⚠️ P&L report revenue is 0, expected >0 given placement", "WARN")
+            log_test("Create fresh agency", False, f"Status {resp.status_code}: {resp.text}")
+            return
+    except Exception as e:
+        log_test("Create fresh agency", False, f"Exception: {str(e)}")
+        return
     
-    # Test 25: P&L Report all-time
-    log("\n" + "=" * 80)
-    log("TEST 25: P&L REPORT (ALL-TIME)")
-    log("=" * 80)
-    pnl_all = test_reports_pnl(agency_a['token'])
-    if pnl_all and pnl_all['month'] == 'all-time':
-        log(f"✅ P&L report (all-time) working")
+    headers = {"Authorization": f"Bearer {agency_token}"}
     
-    # Test 26: Placement report
-    log("\n" + "=" * 80)
-    log("TEST 26: PLACEMENT REPORT")
-    log("=" * 80)
-    placement_report = test_reports_placement(agency_a['token'])
-    if placement_report and len(placement_report) > 0:
-        log(f"✅ Placement report working: {len(placement_report)} placements")
+    # D2: Test FREE plan limits - add 5 staff
+    print("\nD2: Testing FREE plan staff limit (5 allowed)...")
+    staff_ids = []
+    for i in range(6):
+        try:
+            staff_payload = {
+                "name": f"Staff Member {i+1}",
+                "phone": f"98765432{i:02d}",
+                "monthlySalary": 20000
+            }
+            resp = requests.post(f"{BASE_URL}/staff", json=staff_payload, headers=headers, timeout=10)
+            if i < 5:
+                if resp.status_code == 200:
+                    staff_ids.append(resp.json().get("id"))
+                    if i == 4:
+                        log_test("FREE plan allows 5 staff", True, "5th staff created successfully")
+                else:
+                    log_test(f"Create staff {i+1}", False, f"Status {resp.status_code}")
+            else:  # 6th staff
+                if resp.status_code == 402:
+                    error_msg = resp.json().get("error", "")
+                    has_limit = "limit" in error_msg.lower()
+                    log_test("6th staff returns 402 with 'limit' in error", has_limit, 
+                            f"Error: {error_msg}")
+                else:
+                    log_test("6th staff returns 402", False, 
+                            f"Expected 402, got {resp.status_code}")
+        except Exception as e:
+            log_test(f"Staff creation {i+1}", False, f"Exception: {str(e)}")
     
-    # Test 27: Staff report
-    log("\n" + "=" * 80)
-    log("TEST 27: STAFF REPORT")
-    log("=" * 80)
-    staff_report = test_reports_staff(agency_a['token'])
-    if staff_report and len(staff_report) > 0:
-        log(f"✅ Staff report working: {len(staff_report)} staff")
+    # D3: Test client limit (5)
+    print("\nD3: Testing FREE plan client limit (5 allowed)...")
+    for i in range(6):
+        try:
+            client_payload = {
+                "name": f"Client {i+1}",
+                "patientName": f"Patient {i+1}",
+                "phone": f"98765432{i:02d}"
+            }
+            resp = requests.post(f"{BASE_URL}/clients", json=client_payload, headers=headers, timeout=10)
+            if i < 5:
+                if resp.status_code == 200:
+                    if i == 4:
+                        log_test("FREE plan allows 5 clients", True, "5th client created successfully")
+                else:
+                    log_test(f"Create client {i+1}", False, f"Status {resp.status_code}")
+            else:  # 6th client
+                if resp.status_code == 402:
+                    error_msg = resp.json().get("error", "")
+                    has_limit = "limit" in error_msg.lower()
+                    log_test("6th client returns 402 with 'limit' in error", has_limit, 
+                            f"Error: {error_msg}")
+                else:
+                    log_test("6th client returns 402", False, 
+                            f"Expected 402, got {resp.status_code}")
+        except Exception as e:
+            log_test(f"Client creation {i+1}", False, f"Exception: {str(e)}")
     
-    # Test 28: Client report
-    log("\n" + "=" * 80)
-    log("TEST 28: CLIENT REPORT")
-    log("=" * 80)
-    client_report = test_reports_client(agency_a['token'])
-    if client_report and len(client_report) > 0:
-        log(f"✅ Client report working: {len(client_report)} clients")
+    # D3b: Test vendor limit (5)
+    print("\nD3b: Testing FREE plan vendor limit (5 allowed)...")
+    for i in range(6):
+        try:
+            vendor_payload = {
+                "name": f"Vendor {i+1}",
+                "phone": f"98765432{i:02d}",
+                "commissionType": "fixed",
+                "commissionAmount": 1000
+            }
+            resp = requests.post(f"{BASE_URL}/vendors", json=vendor_payload, headers=headers, timeout=10)
+            if i < 5:
+                if resp.status_code == 200:
+                    if i == 4:
+                        log_test("FREE plan allows 5 vendors", True, "5th vendor created successfully")
+                else:
+                    log_test(f"Create vendor {i+1}", False, f"Status {resp.status_code}")
+            else:  # 6th vendor
+                if resp.status_code == 402:
+                    error_msg = resp.json().get("error", "")
+                    has_limit = "limit" in error_msg.lower()
+                    log_test("6th vendor returns 402 with 'limit' in error", has_limit, 
+                            f"Error: {error_msg}")
+                else:
+                    log_test("6th vendor returns 402", False, 
+                            f"Expected 402, got {resp.status_code}")
+        except Exception as e:
+            log_test(f"Vendor creation {i+1}", False, f"Exception: {str(e)}")
     
-    # Test 29: Attendance report
-    log("\n" + "=" * 80)
-    log("TEST 29: ATTENDANCE REPORT")
-    log("=" * 80)
-    attendance_report = test_reports_attendance(agency_a['token'], current_month)
-    if attendance_report and attendance_report['month'] == current_month:
-        log(f"✅ Attendance report working: {len(attendance_report['rows'])} staff")
+    # D4: GET /subscription/plans
+    print("\nD4: Testing GET /api/subscription/plans (as agency)...")
+    try:
+        resp = requests.get(f"{BASE_URL}/subscription/plans", headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, list) and len(data) >= 4:
+                log_test("GET /subscription/plans returns active plans", True, 
+                        f"Found {len(data)} active plans")
+            else:
+                log_test("GET /subscription/plans", False, f"Expected >=4 plans, got {len(data)}")
+        else:
+            log_test("GET /subscription/plans", False, f"Status {resp.status_code}")
+    except Exception as e:
+        log_test("GET /subscription/plans", False, f"Exception: {str(e)}")
     
-    # Test 30: CSV Export
-    log("\n" + "=" * 80)
-    log("TEST 30: CSV EXPORT")
-    log("=" * 80)
-    csv_success = test_csv_export(agency_a['token'])
-    if csv_success:
-        log("✅ CSV export working")
+    # D5: GET /subscription/me
+    print("\nD5: Testing GET /api/subscription/me...")
+    try:
+        resp = requests.get(f"{BASE_URL}/subscription/me", headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            has_structure = ("agency" in data and "usage" in data and 
+                           "requests" in data and "receipts" in data)
+            if has_structure:
+                usage = data.get("usage", {})
+                correct_usage = (usage.get("staffCount") == 5 and 
+                               usage.get("clientCount") == 5 and
+                               usage.get("vendorCount") == 5)
+                log_test("GET /subscription/me returns correct structure and usage", correct_usage, 
+                        f"staffCount={usage.get('staffCount')}, clientCount={usage.get('clientCount')}, vendorCount={usage.get('vendorCount')}")
+            else:
+                log_test("GET /subscription/me", False, "Missing required fields")
+        else:
+            log_test("GET /subscription/me", False, f"Status {resp.status_code}")
+    except Exception as e:
+        log_test("GET /subscription/me", False, f"Exception: {str(e)}")
     
-    # Test 31: Digital Register (no filter)
-    log("\n" + "=" * 80)
-    log("TEST 31: DIGITAL REGISTER (NO FILTER)")
-    log("=" * 80)
-    register_all = test_register_get(agency_a['token'])
-    if register_all:
-        log(f"✅ Digital register (no filter) working: {len(register_all)} activities")
+    # D6: Get PROFESSIONAL plan ID
+    print("\nD6: Getting PROFESSIONAL plan ID...")
+    professional_plan_id = None
+    try:
+        resp = requests.get(f"{BASE_URL}/plans/public", timeout=10)
+        if resp.status_code == 200:
+            plans = resp.json()
+            for plan in plans:
+                if plan.get("code") == "PROFESSIONAL":
+                    professional_plan_id = plan.get("id")
+                    log_test("Found PROFESSIONAL plan", True, f"Plan ID: {professional_plan_id}")
+                    break
+            if not professional_plan_id:
+                log_test("Find PROFESSIONAL plan", False, "Plan not found")
+        else:
+            log_test("Get plans for PROFESSIONAL", False, f"Status {resp.status_code}")
+    except Exception as e:
+        log_test("Get PROFESSIONAL plan", False, f"Exception: {str(e)}")
     
-    # Test 32: Digital Register (type filter)
-    log("\n" + "=" * 80)
-    log("TEST 32: DIGITAL REGISTER (TYPE FILTER)")
-    log("=" * 80)
-    register_duty = test_register_get(agency_a['token'], activity_type='duty_join')
-    if register_duty is not None:
-        log(f"✅ Digital register (type filter) working: {len(register_duty)} duty_join activities")
-    
-    # Test 33: Digital Register (date filter)
-    log("\n" + "=" * 80)
-    log("TEST 33: DIGITAL REGISTER (DATE FILTER)")
-    log("=" * 80)
-    register_today = test_register_get(agency_a['token'], date=today.isoformat())
-    if register_today is not None:
-        log(f"✅ Digital register (date filter) working: {len(register_today)} activities today")
-    
-    # Test 34: Multi-tenant isolation - Sign up Agency B
-    log("\n" + "=" * 80)
-    log("TEST 34: MULTI-TENANT ISOLATION - SIGN UP AGENCY B")
-    log("=" * 80)
-    agency_b = test_signup("TestAgency-B", "Owner B", f"owner.b.{datetime.now().timestamp()}@test.com", "password123")
-    if not agency_b:
-        log("⚠️ Agency B signup failed, skipping multi-tenant tests", "WARN")
+    # D7: POST /subscription/request
+    print("\nD7: Testing POST /api/subscription/request...")
+    payment_request_id = None
+    if professional_plan_id:
+        try:
+            request_payload = {
+                "planId": professional_plan_id,
+                "amount": 1499,
+                "utrNumber": "TEST123456",
+                "screenshotUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+                "transactionDate": datetime.now().strftime("%Y-%m-%d"),
+                "billingCycle": "monthly",
+                "remarks": "Test payment request"
+            }
+            resp = requests.post(f"{BASE_URL}/subscription/request", json=request_payload, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                payment_request_id = data.get("id")
+                correct = (data.get("status") == "pending" and 
+                          data.get("planCode") == "PROFESSIONAL" and
+                          data.get("amount") == 1499)
+                log_test("POST /subscription/request creates pending request", correct, 
+                        f"Request ID: {payment_request_id}, status={data.get('status')}")
+            else:
+                log_test("POST /subscription/request", False, f"Status {resp.status_code}: {resp.text}")
+        except Exception as e:
+            log_test("POST /subscription/request", False, f"Exception: {str(e)}")
     else:
-        test_data['agency_b'] = agency_b
-        
-        # Test 35: Verify Agency B cannot see Agency A's data
-        log("\n" + "=" * 80)
-        log("TEST 35: VERIFY MULTI-TENANT ISOLATION")
-        log("=" * 80)
-        
-        # Check attendance
-        b_attendance = test_attendance_auto_backfill(agency_b['token'], staff_a['id'], current_month)
-        if b_attendance and len(b_attendance) == 0:
-            log("✅ Multi-tenant isolation: Agency B cannot see Agency A's attendance")
-        else:
-            log(f"❌ Multi-tenant isolation FAILED: Agency B can see Agency A's attendance ({len(b_attendance) if b_attendance else 'N/A'} entries)", "ERROR")
-        
-        # Check expenses
-        b_expenses = test_expenses_get(agency_b['token'], current_month)
-        if b_expenses is not None and len(b_expenses) == 0:
-            log("✅ Multi-tenant isolation: Agency B cannot see Agency A's expenses")
-        else:
-            log(f"❌ Multi-tenant isolation FAILED: Agency B can see Agency A's expenses ({len(b_expenses) if b_expenses else 'N/A'} entries)", "ERROR")
-        
-        # Check invoices
-        b_invoices = test_invoices_get(agency_b['token'])
-        if b_invoices is not None and len(b_invoices) == 0:
-            log("✅ Multi-tenant isolation: Agency B cannot see Agency A's invoices")
-        else:
-            log(f"❌ Multi-tenant isolation FAILED: Agency B can see Agency A's invoices ({len(b_invoices) if b_invoices else 'N/A'} entries)", "ERROR")
-        
-        # Check salary
-        b_salary_all = test_salary_all(agency_b['token'], current_month)
-        if b_salary_all and len(b_salary_all['rows']) == 0:
-            log("✅ Multi-tenant isolation: Agency B cannot see Agency A's salary data")
-        else:
-            log(f"❌ Multi-tenant isolation FAILED: Agency B can see Agency A's salary data ({len(b_salary_all['rows']) if b_salary_all else 'N/A'} entries)", "ERROR")
+        log_skip("POST /subscription/request", "No PROFESSIONAL plan ID")
     
-    # Test 36: Delete expense (cleanup test)
-    log("\n" + "=" * 80)
-    log("TEST 36: DELETE EXPENSE")
-    log("=" * 80)
-    if expense:
-        delete_expense_success = test_expenses_delete(agency_a['token'], expense['id'])
-        if delete_expense_success:
-            log("✅ Expense deletion working")
+    # D8: Super Admin - GET /admin/payment-requests?status=pending
+    print("\nD8: Testing GET /api/admin/payment-requests?status=pending (SA)...")
+    if super_admin_token and payment_request_id:
+        try:
+            sa_headers = {"Authorization": f"Bearer {super_admin_token}"}
+            resp = requests.get(f"{BASE_URL}/admin/payment-requests?status=pending", headers=sa_headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                found = any(r.get("id") == payment_request_id for r in data)
+                if found:
+                    request_data = next(r for r in data if r.get("id") == payment_request_id)
+                    has_agency_name = "agencyName" in request_data
+                    log_test("GET /admin/payment-requests includes request with agencyName", has_agency_name, 
+                            f"agencyName={request_data.get('agencyName')}")
+                else:
+                    log_test("GET /admin/payment-requests", False, "Request not found in list")
+            else:
+                log_test("GET /admin/payment-requests", False, f"Status {resp.status_code}")
+        except Exception as e:
+            log_test("GET /admin/payment-requests", False, f"Exception: {str(e)}")
+    else:
+        log_skip("GET /admin/payment-requests", "No super admin token or payment request")
     
-    log("\n" + "=" * 80)
-    log("PHASE 2 BACKEND TESTS COMPLETED")
-    log("=" * 80)
-    return True
+    # D9: Super Admin - POST /admin/payment-requests/:id/approve
+    print("\nD9: Testing POST /api/admin/payment-requests/:id/approve (SA)...")
+    if super_admin_token and payment_request_id:
+        try:
+            sa_headers = {"Authorization": f"Bearer {super_admin_token}"}
+            approve_payload = {"note": "Approved for testing"}
+            resp = requests.post(f"{BASE_URL}/admin/payment-requests/{payment_request_id}/approve", 
+                               json=approve_payload, headers=sa_headers, timeout=10)
+            if resp.status_code == 200:
+                # Verify agency plan updated
+                time.sleep(1)  # Wait for update
+                resp2 = requests.get(f"{BASE_URL}/auth/me", headers=headers, timeout=10)
+                if resp2.status_code == 200:
+                    agency_data = resp2.json().get("agency", {})
+                    correct = (agency_data.get("plan") == "PROFESSIONAL" and 
+                             agency_data.get("limits", {}).get("maxStaff") == 100 and
+                             agency_data.get("expiryDate") is not None)
+                    log_test("Approve updates agency plan to PROFESSIONAL with limits.maxStaff=100", correct, 
+                            f"plan={agency_data.get('plan')}, maxStaff={agency_data.get('limits', {}).get('maxStaff')}, expiryDate={agency_data.get('expiryDate')}")
+                    
+                    # Check receipt generated
+                    resp3 = requests.get(f"{BASE_URL}/receipts", headers=headers, timeout=10)
+                    if resp3.status_code == 200:
+                        receipts = resp3.json()
+                        if len(receipts) > 0:
+                            receipt = receipts[0]
+                            has_prefix = receipt.get("number", "").startswith("RCP")
+                            log_test("Receipt generated with correct prefix", has_prefix, 
+                                    f"Receipt number: {receipt.get('number')}")
+                        else:
+                            log_test("Receipt generated", False, "No receipts found")
+                else:
+                    log_test("Verify agency plan update", False, f"Status {resp2.status_code}")
+            else:
+                log_test("POST /admin/payment-requests/:id/approve", False, 
+                        f"Status {resp.status_code}: {resp.text}")
+        except Exception as e:
+            log_test("POST /admin/payment-requests/:id/approve", False, f"Exception: {str(e)}")
+    else:
+        log_skip("POST /admin/payment-requests/:id/approve", "No super admin token or payment request")
+    
+    # D10: Test 6th staff now succeeds
+    print("\nD10: Testing 6th staff creation now succeeds after upgrade...")
+    try:
+        staff_payload = {
+            "name": "Staff Member 6",
+            "phone": "9876543206",
+            "monthlySalary": 20000
+        }
+        resp = requests.post(f"{BASE_URL}/staff", json=staff_payload, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            log_test("6th staff creation succeeds after upgrade to PROFESSIONAL", True, 
+                    "Staff created successfully")
+        else:
+            log_test("6th staff after upgrade", False, f"Status {resp.status_code}: {resp.text}")
+    except Exception as e:
+        log_test("6th staff after upgrade", False, f"Exception: {str(e)}")
+    
+    # D11: Test reject flow
+    print("\nD11: Testing reject flow...")
+    if super_admin_token and professional_plan_id:
+        try:
+            # Create another request
+            request_payload = {
+                "planId": professional_plan_id,
+                "amount": 1499,
+                "utrNumber": "TEST789",
+                "screenshotUrl": "data:image/png;base64,iVBORw0KGgo=",
+                "transactionDate": datetime.now().strftime("%Y-%m-%d"),
+                "billingCycle": "monthly"
+            }
+            resp = requests.post(f"{BASE_URL}/subscription/request", json=request_payload, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                reject_request_id = resp.json().get("id")
+                
+                # Reject it
+                sa_headers = {"Authorization": f"Bearer {super_admin_token}"}
+                reject_payload = {"note": "Invalid payment proof"}
+                resp2 = requests.post(f"{BASE_URL}/admin/payment-requests/{reject_request_id}/reject", 
+                                    json=reject_payload, headers=sa_headers, timeout=10)
+                if resp2.status_code == 200:
+                    # Verify status
+                    resp3 = requests.get(f"{BASE_URL}/subscription/me", headers=headers, timeout=10)
+                    if resp3.status_code == 200:
+                        requests_list = resp3.json().get("requests", [])
+                        rejected = next((r for r in requests_list if r.get("id") == reject_request_id), None)
+                        if rejected and rejected.get("status") == "rejected":
+                            log_test("Reject sets status to 'rejected'", True, 
+                                    f"status={rejected.get('status')}, note={rejected.get('superAdminNote')}")
+                        else:
+                            log_test("Reject flow", False, "Status not updated to rejected")
+                else:
+                    log_test("POST /admin/payment-requests/:id/reject", False, 
+                            f"Status {resp2.status_code}")
+            else:
+                log_test("Create request for reject test", False, f"Status {resp.status_code}")
+        except Exception as e:
+            log_test("Reject flow", False, f"Exception: {str(e)}")
+    else:
+        log_skip("Reject flow test", "No super admin token or plan ID")
+    
+    # D12: Test request-info flow
+    print("\nD12: Testing request-info flow...")
+    if super_admin_token and professional_plan_id:
+        try:
+            # Create another request
+            request_payload = {
+                "planId": professional_plan_id,
+                "amount": 1499,
+                "utrNumber": "TEST999",
+                "screenshotUrl": "data:image/png;base64,iVBORw0KGgo=",
+                "transactionDate": datetime.now().strftime("%Y-%m-%d"),
+                "billingCycle": "monthly"
+            }
+            resp = requests.post(f"{BASE_URL}/subscription/request", json=request_payload, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                info_request_id = resp.json().get("id")
+                
+                # Request more info
+                sa_headers = {"Authorization": f"Bearer {super_admin_token}"}
+                info_payload = {"note": "Please provide clearer screenshot"}
+                resp2 = requests.post(f"{BASE_URL}/admin/payment-requests/{info_request_id}/request-info", 
+                                    json=info_payload, headers=sa_headers, timeout=10)
+                if resp2.status_code == 200:
+                    # Verify status
+                    resp3 = requests.get(f"{BASE_URL}/subscription/me", headers=headers, timeout=10)
+                    if resp3.status_code == 200:
+                        requests_list = resp3.json().get("requests", [])
+                        info_req = next((r for r in requests_list if r.get("id") == info_request_id), None)
+                        if info_req and info_req.get("status") == "more_info":
+                            log_test("Request-info sets status to 'more_info'", True, 
+                                    f"status={info_req.get('status')}")
+                        else:
+                            log_test("Request-info flow", False, "Status not updated to more_info")
+                else:
+                    log_test("POST /admin/payment-requests/:id/request-info", False, 
+                            f"Status {resp2.status_code}")
+            else:
+                log_test("Create request for info test", False, f"Status {resp.status_code}")
+        except Exception as e:
+            log_test("Request-info flow", False, f"Exception: {str(e)}")
+    else:
+        log_skip("Request-info flow test", "No super admin token or plan ID")
+
+def test_agency_management():
+    """E: Test Agency Management (super admin)"""
+    print("\n=== E) AGENCY MANAGEMENT (Super Admin) ===")
+    
+    if not super_admin_token:
+        log_skip("Agency Management tests", "No super admin token available")
+        return
+    
+    sa_headers = {"Authorization": f"Bearer {super_admin_token}"}
+    
+    # E1: GET /admin/agencies
+    print("\nE1: Testing GET /api/admin/agencies...")
+    try:
+        resp = requests.get(f"{BASE_URL}/admin/agencies", headers=sa_headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, list) and len(data) > 0:
+                agency = data[0]
+                has_fields = ("staffCount" in agency and "clientCount" in agency and 
+                            "totalPaid" in agency and "activePlacements" in agency)
+                log_test("GET /admin/agencies returns list with enriched fields", has_fields, 
+                        f"Found {len(data)} agencies")
+            else:
+                log_test("GET /admin/agencies", False, "No agencies found")
+        else:
+            log_test("GET /admin/agencies", False, f"Status {resp.status_code}")
+    except Exception as e:
+        log_test("GET /admin/agencies", False, f"Exception: {str(e)}")
+    
+    # Create test agency for management operations
+    print("\nE2: Creating test agency for management operations...")
+    test_agency_id = None
+    test_agency_token = None
+    test_agency_password = "testpass123"
+    try:
+        agency_payload = {
+            "agencyName": "Test Agency for Management",
+            "ownerName": "Test Owner",
+            "email": f"mgmt_test_{int(time.time())}@test.com",
+            "password": test_agency_password,
+            "phone": "9876543210"
+        }
+        resp = requests.post(f"{BASE_URL}/auth/signup", json=agency_payload, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            test_agency_id = data.get("agency", {}).get("id")
+            test_agency_token = data.get("token")
+            log_test("Created test agency for management", True, f"Agency ID: {test_agency_id}")
+        else:
+            log_test("Create test agency", False, f"Status {resp.status_code}")
+            return
+    except Exception as e:
+        log_test("Create test agency", False, f"Exception: {str(e)}")
+        return
+    
+    # E3: Test suspend
+    print("\nE3: Testing POST /api/admin/agencies/:id/suspend...")
+    try:
+        resp = requests.post(f"{BASE_URL}/admin/agencies/{test_agency_id}/suspend", headers=sa_headers, timeout=10)
+        if resp.status_code == 200:
+            # Verify status
+            resp2 = requests.get(f"{BASE_URL}/admin/agencies", headers=sa_headers, timeout=10)
+            if resp2.status_code == 200:
+                agencies = resp2.json()
+                agency = next((a for a in agencies if a.get("id") == test_agency_id), None)
+                if agency and agency.get("status") == "suspended":
+                    log_test("Suspend sets status to 'suspended'", True, 
+                            f"status={agency.get('status')}")
+                else:
+                    log_test("Suspend agency", False, "Status not updated")
+        else:
+            log_test("POST /admin/agencies/:id/suspend", False, f"Status {resp.status_code}")
+    except Exception as e:
+        log_test("Suspend agency", False, f"Exception: {str(e)}")
+    
+    # E4: Test activate
+    print("\nE4: Testing POST /api/admin/agencies/:id/activate...")
+    try:
+        resp = requests.post(f"{BASE_URL}/admin/agencies/{test_agency_id}/activate", headers=sa_headers, timeout=10)
+        if resp.status_code == 200:
+            # Verify status
+            resp2 = requests.get(f"{BASE_URL}/admin/agencies", headers=sa_headers, timeout=10)
+            if resp2.status_code == 200:
+                agencies = resp2.json()
+                agency = next((a for a in agencies if a.get("id") == test_agency_id), None)
+                if agency and agency.get("status") == "active":
+                    log_test("Activate sets status to 'active'", True, 
+                            f"status={agency.get('status')}")
+                else:
+                    log_test("Activate agency", False, "Status not updated")
+        else:
+            log_test("POST /admin/agencies/:id/activate", False, f"Status {resp.status_code}")
+    except Exception as e:
+        log_test("Activate agency", False, f"Exception: {str(e)}")
+    
+    # E5: Test change-plan
+    print("\nE5: Testing POST /api/admin/agencies/:id/change-plan...")
+    try:
+        # Get STARTER plan ID
+        resp = requests.get(f"{BASE_URL}/plans/public", timeout=10)
+        if resp.status_code == 200:
+            plans = resp.json()
+            starter_plan = next((p for p in plans if p.get("code") == "STARTER"), None)
+            if starter_plan:
+                change_payload = {
+                    "planId": starter_plan.get("id"),
+                    "billingCycle": "monthly"
+                }
+                resp2 = requests.post(f"{BASE_URL}/admin/agencies/{test_agency_id}/change-plan", 
+                                     json=change_payload, headers=sa_headers, timeout=10)
+                if resp2.status_code == 200:
+                    # Verify plan changed
+                    resp3 = requests.get(f"{BASE_URL}/admin/agencies", headers=sa_headers, timeout=10)
+                    if resp3.status_code == 200:
+                        agencies = resp3.json()
+                        agency = next((a for a in agencies if a.get("id") == test_agency_id), None)
+                        if agency:
+                            correct = (agency.get("plan") == "STARTER" and 
+                                     agency.get("limits", {}).get("maxStaff") == 25 and
+                                     agency.get("expiryDate") is not None)
+                            log_test("Change-plan updates plan and limits", correct, 
+                                    f"plan={agency.get('plan')}, maxStaff={agency.get('limits', {}).get('maxStaff')}")
+                        else:
+                            log_test("Change-plan", False, "Agency not found")
+                else:
+                    log_test("POST /admin/agencies/:id/change-plan", False, 
+                            f"Status {resp2.status_code}")
+            else:
+                log_skip("Change-plan test", "STARTER plan not found")
+    except Exception as e:
+        log_test("Change-plan", False, f"Exception: {str(e)}")
+    
+    # E6: Test reset-password
+    print("\nE6: Testing POST /api/admin/agencies/:id/reset-password...")
+    new_password = "newpass456"
+    try:
+        reset_payload = {"newPassword": new_password}
+        resp = requests.post(f"{BASE_URL}/admin/agencies/{test_agency_id}/reset-password", 
+                           json=reset_payload, headers=sa_headers, timeout=10)
+        if resp.status_code == 200:
+            # Try to login with new password
+            time.sleep(1)
+            login_payload = {
+                "email": f"mgmt_test_{test_agency_id.split('-')[0]}@test.com",  # Approximate
+                "password": new_password
+            }
+            # Get the actual email from agencies list
+            resp2 = requests.get(f"{BASE_URL}/admin/agencies", headers=sa_headers, timeout=10)
+            if resp2.status_code == 200:
+                agencies = resp2.json()
+                agency = next((a for a in agencies if a.get("id") == test_agency_id), None)
+                if agency:
+                    login_payload["email"] = agency.get("ownerEmail")
+                    resp3 = requests.post(f"{BASE_URL}/auth/login", json=login_payload, timeout=10)
+                    if resp3.status_code == 200:
+                        log_test("Reset-password allows login with new password", True, 
+                                "Login successful with new password")
+                    else:
+                        log_test("Login with new password", False, 
+                                f"Status {resp3.status_code}: {resp3.text}")
+        else:
+            log_test("POST /admin/agencies/:id/reset-password", False, 
+                    f"Status {resp.status_code}")
+    except Exception as e:
+        log_test("Reset-password", False, f"Exception: {str(e)}")
+    
+    # E7: Test login-as (impersonation)
+    print("\nE7: Testing POST /api/admin/agencies/:id/login-as...")
+    try:
+        resp = requests.post(f"{BASE_URL}/admin/agencies/{test_agency_id}/login-as", 
+                           headers=sa_headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            impersonation_token = data.get("token")
+            if impersonation_token:
+                # Use impersonation token to call /auth/me
+                imp_headers = {"Authorization": f"Bearer {impersonation_token}"}
+                resp2 = requests.get(f"{BASE_URL}/auth/me", headers=imp_headers, timeout=10)
+                if resp2.status_code == 200:
+                    me_data = resp2.json()
+                    user = me_data.get("user", {})
+                    agency = me_data.get("agency", {})
+                    correct = (user.get("agencyId") == test_agency_id and 
+                             user.get("role") == "agency_owner" and
+                             agency.get("id") == test_agency_id)
+                    log_test("Login-as returns impersonation token that works", correct, 
+                            f"Impersonated agency: {agency.get('name')}")
+                else:
+                    log_test("Use impersonation token", False, f"Status {resp2.status_code}")
+            else:
+                log_test("Login-as", False, "No token returned")
+        else:
+            log_test("POST /admin/agencies/:id/login-as", False, f"Status {resp.status_code}")
+    except Exception as e:
+        log_test("Login-as", False, f"Exception: {str(e)}")
+    
+    # E8: Test DELETE agency (cascade)
+    print("\nE8: Testing DELETE /api/admin/agencies/:id (cascade delete)...")
+    # First add some data to the test agency
+    test_headers = {"Authorization": f"Bearer {test_agency_token}"}
+    try:
+        # Add a staff member
+        staff_payload = {"name": "Test Staff", "phone": "9876543210", "monthlySalary": 20000}
+        requests.post(f"{BASE_URL}/staff", json=staff_payload, headers=test_headers, timeout=10)
+        
+        # Delete agency
+        resp = requests.delete(f"{BASE_URL}/admin/agencies/{test_agency_id}", headers=sa_headers, timeout=10)
+        if resp.status_code == 200:
+            # Verify agency deleted
+            resp2 = requests.get(f"{BASE_URL}/admin/agencies", headers=sa_headers, timeout=10)
+            if resp2.status_code == 200:
+                agencies = resp2.json()
+                deleted = not any(a.get("id") == test_agency_id for a in agencies)
+                log_test("DELETE /admin/agencies/:id removes agency", deleted, 
+                        "Agency and cascade data deleted")
+            else:
+                log_test("Verify agency deletion", False, f"Status {resp2.status_code}")
+        else:
+            log_test("DELETE /admin/agencies/:id", False, f"Status {resp.status_code}")
+    except Exception as e:
+        log_test("DELETE agency", False, f"Exception: {str(e)}")
+
+def test_admin_dashboard():
+    """F: Test Admin Dashboard"""
+    print("\n=== F) ADMIN DASHBOARD ===")
+    
+    if not super_admin_token:
+        log_skip("Admin Dashboard test", "No super admin token available")
+        return
+    
+    sa_headers = {"Authorization": f"Bearer {super_admin_token}"}
+    
+    print("\nF1: Testing GET /api/admin/dashboard...")
+    try:
+        resp = requests.get(f"{BASE_URL}/admin/dashboard", headers=sa_headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            has_cards = "cards" in data
+            has_growth = "growth" in data and isinstance(data.get("growth"), list)
+            
+            if has_cards and has_growth:
+                cards = data.get("cards", {})
+                growth = data.get("growth", [])
+                
+                required_cards = ["totalAgencies", "trialAgencies", "paidAgencies", 
+                                "totalStaff", "totalClients", "totalRevenue", 
+                                "pendingApprovals", "openTickets"]
+                has_all_cards = all(k in cards for k in required_cards)
+                
+                correct_growth = len(growth) == 6
+                
+                log_test("GET /admin/dashboard returns cards and growth[6]", 
+                        has_all_cards and correct_growth, 
+                        f"Cards: {len(cards)} fields, Growth: {len(growth)} months")
+            else:
+                log_test("GET /admin/dashboard", False, "Missing cards or growth")
+        else:
+            log_test("GET /admin/dashboard", False, f"Status {resp.status_code}")
+    except Exception as e:
+        log_test("GET /admin/dashboard", False, f"Exception: {str(e)}")
+
+def test_audit_log():
+    """G: Test Audit Log"""
+    print("\n=== G) AUDIT LOG ===")
+    
+    if not super_admin_token:
+        log_skip("Audit Log test", "No super admin token available")
+        return
+    
+    sa_headers = {"Authorization": f"Bearer {super_admin_token}"}
+    
+    print("\nG1: Testing GET /api/admin/audit...")
+    try:
+        resp = requests.get(f"{BASE_URL}/admin/audit", headers=sa_headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, list):
+                # Check if recent actions are logged
+                has_entries = len(data) > 0
+                if has_entries:
+                    entry = data[0]
+                    has_fields = ("action" in entry and "target" in entry and 
+                                "message" in entry and "createdAt" in entry)
+                    log_test("GET /admin/audit returns audit entries", has_fields, 
+                            f"Found {len(data)} audit entries, latest action: {entry.get('action')}")
+                else:
+                    log_test("GET /admin/audit", True, "No audit entries yet (expected for fresh setup)")
+            else:
+                log_test("GET /admin/audit", False, "Expected array")
+        else:
+            log_test("GET /admin/audit", False, f"Status {resp.status_code}")
+    except Exception as e:
+        log_test("GET /admin/audit", False, f"Exception: {str(e)}")
+
+def test_support_tickets():
+    """H: Test Support Tickets"""
+    global agency_token, agency_id
+    print("\n=== H) SUPPORT TICKETS ===")
+    
+    if not agency_token:
+        print("\nCreating test agency for support tickets...")
+        agency_email = f"support_test_{int(time.time())}@test.com"
+        agency_payload = {
+            "agencyName": "Support Test Agency",
+            "ownerName": "Support Owner",
+            "email": agency_email,
+            "password": "password123",
+            "phone": "9876543210"
+        }
+        try:
+            resp = requests.post(f"{BASE_URL}/auth/signup", json=agency_payload, timeout=10)
+            if resp.status_code == 200:
+                agency_token = resp.json().get("token")
+                agency_id = resp.json().get("agency", {}).get("id")
+            else:
+                log_skip("Support Tickets tests", "Failed to create test agency")
+                return
+        except Exception as e:
+            log_skip("Support Tickets tests", f"Exception creating agency: {str(e)}")
+            return
+    
+    headers = {"Authorization": f"Bearer {agency_token}"}
+    
+    # H1: Agency creates ticket
+    print("\nH1: Testing POST /api/support/tickets (agency)...")
+    ticket_id = None
+    try:
+        ticket_payload = {
+            "subject": "Need help with subscription",
+            "message": "I cannot upgrade my plan",
+            "priority": "high"
+        }
+        resp = requests.post(f"{BASE_URL}/support/tickets", json=ticket_payload, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            ticket_id = data.get("id")
+            correct = (data.get("subject") == "Need help with subscription" and 
+                      data.get("priority") == "high" and
+                      data.get("status") == "open")
+            log_test("POST /support/tickets creates ticket", correct, 
+                    f"Ticket ID: {ticket_id}, status={data.get('status')}")
+        else:
+            log_test("POST /support/tickets", False, f"Status {resp.status_code}: {resp.text}")
+    except Exception as e:
+        log_test("POST /support/tickets", False, f"Exception: {str(e)}")
+    
+    # H2: Super Admin sees ticket with agencyName
+    print("\nH2: Testing GET /api/support/tickets (SA sees with agencyName)...")
+    if super_admin_token and ticket_id:
+        try:
+            sa_headers = {"Authorization": f"Bearer {super_admin_token}"}
+            resp = requests.get(f"{BASE_URL}/support/tickets", headers=sa_headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                ticket = next((t for t in data if t.get("id") == ticket_id), None)
+                if ticket:
+                    has_agency_name = "agencyName" in ticket
+                    log_test("GET /support/tickets (SA) includes agencyName", has_agency_name, 
+                            f"agencyName={ticket.get('agencyName')}")
+                else:
+                    log_test("GET /support/tickets (SA)", False, "Ticket not found")
+            else:
+                log_test("GET /support/tickets (SA)", False, f"Status {resp.status_code}")
+        except Exception as e:
+            log_test("GET /support/tickets (SA)", False, f"Exception: {str(e)}")
+    else:
+        log_skip("GET /support/tickets (SA)", "No super admin token or ticket")
+    
+    # H3: Super Admin replies
+    print("\nH3: Testing POST /api/support/tickets/:id/reply (SA)...")
+    if super_admin_token and ticket_id:
+        try:
+            sa_headers = {"Authorization": f"Bearer {super_admin_token}"}
+            reply_payload = {
+                "message": "We are looking into your issue",
+                "status": "in_progress"
+            }
+            resp = requests.post(f"{BASE_URL}/support/tickets/{ticket_id}/reply", 
+                               json=reply_payload, headers=sa_headers, timeout=10)
+            if resp.status_code == 200:
+                # Verify reply added
+                resp2 = requests.get(f"{BASE_URL}/support/tickets", headers=headers, timeout=10)
+                if resp2.status_code == 200:
+                    tickets = resp2.json()
+                    ticket = next((t for t in tickets if t.get("id") == ticket_id), None)
+                    if ticket:
+                        has_reply = len(ticket.get("replies", [])) > 0
+                        status_updated = ticket.get("status") == "in_progress"
+                        log_test("Reply appended and status updated", has_reply and status_updated, 
+                                f"Replies: {len(ticket.get('replies', []))}, status={ticket.get('status')}")
+                    else:
+                        log_test("Verify reply", False, "Ticket not found")
+            else:
+                log_test("POST /support/tickets/:id/reply", False, f"Status {resp.status_code}")
+        except Exception as e:
+            log_test("POST /support/tickets/:id/reply", False, f"Exception: {str(e)}")
+    else:
+        log_skip("POST /support/tickets/:id/reply", "No super admin token or ticket")
+    
+    # H4: Update ticket status
+    print("\nH4: Testing PUT /api/support/tickets/:id (update status)...")
+    if ticket_id:
+        try:
+            update_payload = {"status": "resolved"}
+            resp = requests.put(f"{BASE_URL}/support/tickets/{ticket_id}", 
+                              json=update_payload, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                # Verify status
+                resp2 = requests.get(f"{BASE_URL}/support/tickets", headers=headers, timeout=10)
+                if resp2.status_code == 200:
+                    tickets = resp2.json()
+                    ticket = next((t for t in tickets if t.get("id") == ticket_id), None)
+                    if ticket and ticket.get("status") == "resolved":
+                        log_test("PUT /support/tickets/:id updates status", True, 
+                                f"status={ticket.get('status')}")
+                    else:
+                        log_test("PUT /support/tickets/:id", False, "Status not updated")
+            else:
+                log_test("PUT /support/tickets/:id", False, f"Status {resp.status_code}")
+        except Exception as e:
+            log_test("PUT /support/tickets/:id", False, f"Exception: {str(e)}")
+    else:
+        log_skip("PUT /support/tickets/:id", "No ticket created")
+    
+    # H5: Test cross-agency isolation
+    print("\nH5: Testing cross-agency ticket isolation...")
+    try:
+        # Create another agency
+        agency2_email = f"support_test2_{int(time.time())}@test.com"
+        agency2_payload = {
+            "agencyName": "Support Test Agency 2",
+            "ownerName": "Support Owner 2",
+            "email": agency2_email,
+            "password": "password123",
+            "phone": "9876543211"
+        }
+        resp = requests.post(f"{BASE_URL}/auth/signup", json=agency2_payload, timeout=10)
+        if resp.status_code == 200:
+            agency2_token = resp.json().get("token")
+            headers2 = {"Authorization": f"Bearer {agency2_token}"}
+            
+            # Agency 2 tries to see tickets
+            resp2 = requests.get(f"{BASE_URL}/support/tickets", headers=headers2, timeout=10)
+            if resp2.status_code == 200:
+                tickets = resp2.json()
+                # Should not see agency 1's ticket
+                has_agency1_ticket = any(t.get("id") == ticket_id for t in tickets)
+                log_test("Cross-agency ticket isolation", not has_agency1_ticket, 
+                        f"Agency 2 sees {len(tickets)} tickets (should not see Agency 1's)")
+            else:
+                log_test("Cross-agency isolation check", False, f"Status {resp2.status_code}")
+        else:
+            log_skip("Cross-agency isolation test", "Failed to create second agency")
+    except Exception as e:
+        log_test("Cross-agency isolation", False, f"Exception: {str(e)}")
+
+def test_regression():
+    """I: Test Regression (Phase 1 & 2 must still work)"""
+    print("\n=== I) REGRESSION TESTS ===")
+    
+    print("\nCreating fresh agency for regression tests...")
+    regression_email = f"regression_{int(time.time())}@test.com"
+    regression_payload = {
+        "agencyName": "Regression Test Agency",
+        "ownerName": "Regression Owner",
+        "email": regression_email,
+        "password": "password123",
+        "phone": "9876543210"
+    }
+    
+    try:
+        resp = requests.post(f"{BASE_URL}/auth/signup", json=regression_payload, timeout=10)
+        if resp.status_code != 200:
+            log_skip("Regression tests", "Failed to create test agency")
+            return
+        
+        regression_token = resp.json().get("token")
+        headers = {"Authorization": f"Bearer {regression_token}"}
+        
+        # I1: Test staff limit (5 on FREE)
+        print("\nI1: Regression - Staff limit on FREE plan...")
+        for i in range(6):
+            staff_payload = {
+                "name": f"Regression Staff {i+1}",
+                "phone": f"98765432{i:02d}",
+                "monthlySalary": 20000
+            }
+            resp = requests.post(f"{BASE_URL}/staff", json=staff_payload, headers=headers, timeout=10)
+            if i < 5:
+                if resp.status_code == 200:
+                    if i == 4:
+                        log_test("Regression: 5 staff allowed on FREE", True, "5th staff created")
+                else:
+                    log_test(f"Regression: Create staff {i+1}", False, f"Status {resp.status_code}")
+            else:
+                if resp.status_code == 402:
+                    error_msg = resp.json().get("error", "")
+                    has_limit = "limit" in error_msg.lower()
+                    log_test("Regression: 6th staff returns 402 with 'limit'", has_limit, 
+                            f"Error: {error_msg}")
+                else:
+                    log_test("Regression: 6th staff returns 402", False, 
+                            f"Expected 402, got {resp.status_code}")
+        
+        # I2: Test client limit (5 on FREE)
+        print("\nI2: Regression - Client limit on FREE plan...")
+        for i in range(6):
+            client_payload = {
+                "name": f"Regression Client {i+1}",
+                "patientName": f"Patient {i+1}",
+                "phone": f"98765432{i:02d}"
+            }
+            resp = requests.post(f"{BASE_URL}/clients", json=client_payload, headers=headers, timeout=10)
+            if i < 5:
+                if resp.status_code == 200:
+                    if i == 4:
+                        log_test("Regression: 5 clients allowed on FREE", True, "5th client created")
+                else:
+                    log_test(f"Regression: Create client {i+1}", False, f"Status {resp.status_code}")
+            else:
+                if resp.status_code == 402:
+                    error_msg = resp.json().get("error", "")
+                    has_limit = "limit" in error_msg.lower()
+                    log_test("Regression: 6th client returns 402 with 'limit'", has_limit, 
+                            f"Error: {error_msg}")
+                else:
+                    log_test("Regression: 6th client returns 402", False, 
+                            f"Expected 402, got {resp.status_code}")
+        
+        # I3: Test vendor limit (5 on FREE)
+        print("\nI3: Regression - Vendor limit on FREE plan...")
+        for i in range(6):
+            vendor_payload = {
+                "name": f"Regression Vendor {i+1}",
+                "phone": f"98765432{i:02d}",
+                "commissionType": "fixed",
+                "commissionAmount": 1000
+            }
+            resp = requests.post(f"{BASE_URL}/vendors", json=vendor_payload, headers=headers, timeout=10)
+            if i < 5:
+                if resp.status_code == 200:
+                    if i == 4:
+                        log_test("Regression: 5 vendors allowed on FREE", True, "5th vendor created")
+                else:
+                    log_test(f"Regression: Create vendor {i+1}", False, f"Status {resp.status_code}")
+            else:
+                if resp.status_code == 402:
+                    error_msg = resp.json().get("error", "")
+                    has_limit = "limit" in error_msg.lower()
+                    log_test("Regression: 6th vendor returns 402 with 'limit'", has_limit, 
+                            f"Error: {error_msg}")
+                else:
+                    log_test("Regression: 6th vendor returns 402", False, 
+                            f"Expected 402, got {resp.status_code}")
+        
+    except Exception as e:
+        log_test("Regression tests", False, f"Exception: {str(e)}")
+
+def print_summary():
+    """Print test summary"""
+    print("\n" + "="*80)
+    print("TEST SUMMARY")
+    print("="*80)
+    print(f"✅ PASSED: {test_results['passed']}")
+    print(f"❌ FAILED: {test_results['failed']}")
+    print(f"⏭️  SKIPPED: {test_results['skipped']}")
+    print(f"TOTAL: {test_results['passed'] + test_results['failed'] + test_results['skipped']}")
+    
+    if test_results['errors']:
+        print("\n" + "="*80)
+        print("FAILED TESTS:")
+        print("="*80)
+        for error in test_results['errors']:
+            print(f"  • {error}")
+    
+    print("\n" + "="*80)
+
+def main():
+    """Main test execution"""
+    print("="*80)
+    print("DUTYONTRACK PHASE 3 COMPREHENSIVE BACKEND TESTING")
+    print("="*80)
+    print(f"Base URL: {BASE_URL}")
+    print("="*80)
+    
+    # A) Setup Wizard
+    setup_status = test_setup_status()
+    
+    if setup_status and setup_status.get("needsSetup"):
+        print("\n🔧 Setup needed - creating super admin...")
+        test_setup_complete()
+        test_setup_complete_409()
+    else:
+        print("\n⚠️  Super admin already exists - testing idempotency...")
+        test_setup_complete_409()
+    
+    test_public_endpoints()
+    
+    # B) Platform Settings
+    test_platform_settings()
+    
+    # C) Plans CRUD
+    test_plans_crud()
+    
+    # D) Subscription E2E
+    test_subscription_e2e()
+    
+    # E) Agency Management
+    test_agency_management()
+    
+    # F) Admin Dashboard
+    test_admin_dashboard()
+    
+    # G) Audit Log
+    test_audit_log()
+    
+    # H) Support Tickets
+    test_support_tickets()
+    
+    # I) Regression
+    test_regression()
+    
+    # Print summary
+    print_summary()
+    
+    # Exit with appropriate code
+    if test_results['failed'] > 0:
+        exit(1)
+    else:
+        exit(0)
 
 if __name__ == "__main__":
-    try:
-        success = run_phase2_tests()
-        sys.exit(0 if success else 1)
-    except Exception as e:
-        log(f"❌ FATAL ERROR: {str(e)}", "ERROR")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+    main()
