@@ -6,34 +6,56 @@ import crypto from 'crypto'
 // ============ MongoDB ============
 let client
 let db
+let clientPromise
+
 async function connectToMongo() {
-  if (!client) {
-    client = new MongoClient(process.env.MONGO_URL)
-    await client.connect()
-    db = client.db(process.env.DB_NAME)
-    // Indexes
-    try {
-      await db.collection('users').createIndex({ email: 1 }, { unique: true })
-      await db.collection('agencies').createIndex({ ownerEmail: 1 })
-      await db.collection('staff').createIndex({ agencyId: 1 })
-      await db.collection('clients').createIndex({ agencyId: 1 })
-      await db.collection('vendors').createIndex({ agencyId: 1 })
-      await db.collection('placements').createIndex({ agencyId: 1 })
-      await db.collection('activities').createIndex({ agencyId: 1, createdAt: -1 })
-      await db.collection('attendance').createIndex({ agencyId: 1, staffId: 1, date: 1 }, { unique: true })
-      await db.collection('salary_payments').createIndex({ agencyId: 1, staffId: 1, month: 1 })
-      await db.collection('expenses').createIndex({ agencyId: 1, date: -1 })
-      await db.collection('incomes').createIndex({ agencyId: 1, date: -1 })
-      await db.collection('invoices').createIndex({ agencyId: 1, createdAt: -1 })
-      await db.collection('platform_settings').createIndex({ id: 1 }, { unique: true })
-      await db.collection('plans').createIndex({ id: 1 }, { unique: true })
-      await db.collection('payment_requests').createIndex({ agencyId: 1, createdAt: -1 })
-      await db.collection('payment_requests').createIndex({ status: 1 })
-      await db.collection('receipts').createIndex({ agencyId: 1, createdAt: -1 })
-      await db.collection('super_audit').createIndex({ createdAt: -1 })
-      await db.collection('support_tickets').createIndex({ agencyId: 1, createdAt: -1 })
-    } catch (e) {}
+  if (db) return db
+  if (!clientPromise) {
+    const uri = process.env.MONGO_URL
+    if (!uri || typeof uri !== 'string' || uri.trim() === '') {
+      throw new Error('MONGO_URL environment variable is not set. Configure it in your deployment (Vercel: Settings → Environment Variables).')
+    }
+    if (!/^mongodb(\+srv)?:\/\//.test(uri)) {
+      throw new Error('MONGO_URL must start with mongodb:// or mongodb+srv:// — got: ' + uri.slice(0, 40))
+    }
+    const dbName = process.env.DB_NAME
+    if (!dbName || typeof dbName !== 'string' || dbName.trim() === '') {
+      throw new Error('DB_NAME environment variable is not set. Configure it in your deployment.')
+    }
+    clientPromise = (async () => {
+      const c = new MongoClient(uri, {
+        serverSelectionTimeoutMS: 10000,
+        maxPoolSize: 10,
+      })
+      await c.connect()
+      client = c
+      db = c.db(dbName)
+      // Indexes
+      try {
+        await db.collection('users').createIndex({ email: 1 }, { unique: true })
+        await db.collection('agencies').createIndex({ ownerEmail: 1 })
+        await db.collection('staff').createIndex({ agencyId: 1 })
+        await db.collection('clients').createIndex({ agencyId: 1 })
+        await db.collection('vendors').createIndex({ agencyId: 1 })
+        await db.collection('placements').createIndex({ agencyId: 1 })
+        await db.collection('activities').createIndex({ agencyId: 1, createdAt: -1 })
+        await db.collection('attendance').createIndex({ agencyId: 1, staffId: 1, date: 1 }, { unique: true })
+        await db.collection('salary_payments').createIndex({ agencyId: 1, staffId: 1, month: 1 })
+        await db.collection('expenses').createIndex({ agencyId: 1, date: -1 })
+        await db.collection('incomes').createIndex({ agencyId: 1, date: -1 })
+        await db.collection('invoices').createIndex({ agencyId: 1, createdAt: -1 })
+        await db.collection('platform_settings').createIndex({ id: 1 }, { unique: true })
+        await db.collection('plans').createIndex({ id: 1 }, { unique: true })
+        await db.collection('payment_requests').createIndex({ agencyId: 1, createdAt: -1 })
+        await db.collection('payment_requests').createIndex({ status: 1 })
+        await db.collection('receipts').createIndex({ agencyId: 1, createdAt: -1 })
+        await db.collection('super_audit').createIndex({ createdAt: -1 })
+        await db.collection('support_tickets').createIndex({ agencyId: 1, createdAt: -1 })
+      } catch (e) {}
+      return db
+    })()
   }
+  await clientPromise
   return db
 }
 
