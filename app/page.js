@@ -168,7 +168,7 @@ function Landing({ onAuth }) {
 
 // ============================= Auth =============================
 function AuthScreen({ initialMode = 'login', onSuccess, onBack }) {
-  const [mode, setMode] = useState(initialMode)
+  const [mode, setMode] = useState(initialMode) // login | signup | forgot | forgotSent
   const [loading, setLoading] = useState(false)
   const [form, setForm] = useState({
     agencyName: '', ownerName: '', email: '', password: '', phone: '',
@@ -180,6 +180,11 @@ function AuthScreen({ initialMode = 'login', onSuccess, onBack }) {
     e.preventDefault()
     setLoading(true)
     try {
+      if (mode === 'forgot') {
+        await api('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email: form.email }) })
+        setMode('forgotSent')
+        return
+      }
       const endpoint = mode === 'signup' ? '/auth/signup' : '/auth/login'
       const body = mode === 'signup' ? form : { email: form.email, password: form.password }
       const data = await api(endpoint, { method: 'POST', body: JSON.stringify(body) })
@@ -202,13 +207,30 @@ function AuthScreen({ initialMode = 'login', onSuccess, onBack }) {
             <Button variant="ghost" size="sm" onClick={onBack}>Back</Button>
           </div>
           <CardTitle className="text-2xl">
-            {mode === 'signup' ? 'Register your agency' : 'Login to your agency'}
+            {mode === 'signup' && 'Register your agency'}
+            {mode === 'login' && 'Login to your agency'}
+            {mode === 'forgot' && 'Reset your password'}
+            {mode === 'forgotSent' && 'Check your inbox'}
           </CardTitle>
           <CardDescription>
-            {mode === 'signup' ? 'Get started with the FREE plan — 5 staff & 5 clients included.' : 'Enter your credentials to access your workspace.'}
+            {mode === 'signup' && 'Get started with the FREE plan — 5 staff & 5 clients included.'}
+            {mode === 'login' && 'Enter your credentials to access your workspace.'}
+            {mode === 'forgot' && 'Enter your registered email — we\u2019ll send you a secure reset link (valid for 1 hour).'}
+            {mode === 'forgotSent' && `If ${form.email} is registered, a password-reset link has been sent to it. Please check your inbox (and spam folder).`}
           </CardDescription>
         </CardHeader>
         <CardContent>
+          {mode === 'forgotSent' ? (
+            <div className="space-y-3">
+              <div className="rounded-lg border bg-muted/50 p-3 text-sm text-muted-foreground">
+                <div className="font-medium text-foreground mb-1">What happens next?</div>
+                Click the link in the email → set a new password → log in.<br/>
+                All your agency data, staff, clients, placements and invoices remain 100% intact — only your password gets updated.
+              </div>
+              <Button variant="outline" className="w-full" onClick={() => setMode('login')}>Back to login</Button>
+              <Button variant="ghost" className="w-full" onClick={() => setMode('forgot')}>Didn&apos;t receive it? Try again</Button>
+            </div>
+          ) : (
           <form onSubmit={submit} className="space-y-3">
             {mode === 'signup' && (
               <>
@@ -256,20 +278,84 @@ function AuthScreen({ initialMode = 'login', onSuccess, onBack }) {
               <Label>Email</Label>
               <Input required type="email" value={form.email} onChange={(e) => set('email', e.target.value)} />
             </div>
-            <div>
-              <Label>Password</Label>
-              <Input required type="password" minLength={6} value={form.password} onChange={(e) => set('password', e.target.value)} />
-            </div>
+            {mode !== 'forgot' && (
+              <div>
+                <div className="flex items-center justify-between">
+                  <Label>Password</Label>
+                  {mode === 'login' && (
+                    <button type="button" onClick={() => setMode('forgot')} className="text-xs text-primary hover:underline">
+                      Forgot password?
+                    </button>
+                  )}
+                </div>
+                <Input required type="password" minLength={6} value={form.password} onChange={(e) => set('password', e.target.value)} />
+              </div>
+            )}
             <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? 'Please wait...' : mode === 'signup' ? 'Create Agency Account' : 'Login'}
+              {loading ? 'Please wait...' :
+                mode === 'signup' ? 'Create Agency Account' :
+                mode === 'forgot' ? 'Send reset link' : 'Login'}
             </Button>
           </form>
-          <div className="mt-4 text-center text-sm text-muted-foreground">
-            {mode === 'signup' ? 'Already have an agency?' : "Don't have an account yet?"}{' '}
-            <button className="text-primary font-medium hover:underline" onClick={() => setMode(mode === 'signup' ? 'login' : 'signup')}>
-              {mode === 'signup' ? 'Login' : 'Sign up'}
-            </button>
+          )}
+          {mode !== 'forgotSent' && (
+            <div className="mt-4 text-center text-sm text-muted-foreground">
+              {mode === 'forgot' ? (
+                <button type="button" onClick={() => setMode('login')} className="text-primary font-medium hover:underline">Back to login</button>
+              ) : (
+                <>
+                  {mode === 'signup' ? 'Already have an agency?' : "Don't have an account yet?"}{' '}
+                  <button type="button" className="text-primary font-medium hover:underline" onClick={() => setMode(mode === 'signup' ? 'login' : 'signup')}>
+                    {mode === 'signup' ? 'Login' : 'Sign up'}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+// ============================= Reset Password Screen =============================
+function ResetPasswordScreen({ token, onSuccess, onCancel }) {
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const submit = async (e) => {
+    e.preventDefault()
+    if (password.length < 6) return toast.error('Password must be at least 6 characters')
+    if (password !== confirm) return toast.error('Passwords do not match')
+    setSaving(true)
+    try {
+      const data = await api('/auth/reset-password', { method: 'POST', body: JSON.stringify({ token, newPassword: password }) })
+      setToken(data.token)
+      toast.success('Password reset! You are now logged in.')
+      onSuccess(data)
+    } catch (err) {
+      toast.error(err.message)
+    } finally { setSaving(false) }
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-background to-primary/5 p-4">
+      <Card className="w-full max-w-md">
+        <CardHeader>
+          <div className="flex items-center justify-between mb-2">
+            <Logo />
           </div>
+          <CardTitle className="text-2xl">Set a new password</CardTitle>
+          <CardDescription>Choose a strong password (at least 6 characters). Your agency data stays intact — only your password changes.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={submit} className="space-y-3">
+            <div><Label>New password</Label><Input required type="password" minLength={6} value={password} onChange={(e) => setPassword(e.target.value)} autoFocus /></div>
+            <div><Label>Confirm new password</Label><Input required type="password" minLength={6} value={confirm} onChange={(e) => setConfirm(e.target.value)} /></div>
+            <Button type="submit" className="w-full" disabled={saving}>{saving ? 'Saving...' : 'Reset password & login'}</Button>
+            <Button type="button" variant="ghost" className="w-full" onClick={onCancel}>Cancel</Button>
+          </form>
         </CardContent>
       </Card>
     </div>
@@ -3459,13 +3545,19 @@ function AgencySupport() {
 
 // ============================= Root App =============================
 function App() {
-  const [screen, setScreen] = useState('loading') // loading | setup | landing | auth | app | superadmin
+  const [screen, setScreen] = useState('loading') // loading | setup | landing | auth | app | superadmin | reset
   const [authMode, setAuthMode] = useState('login')
   const [user, setUser] = useState(null)
   const [agency, setAgency] = useState(null)
   const [active, setActive] = useState('dashboard')
+  const [resetToken, setResetToken] = useState(null)
 
   const bootstrap = useCallback(async () => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      const rt = params.get('reset_token')
+      if (rt) { setResetToken(rt); setScreen('reset'); return }
+    }
     try {
       const status = await fetch('/api/setup/status').then((r) => r.json())
       if (status.needsSetup) { setScreen('setup'); return }
@@ -3504,6 +3596,19 @@ function App() {
     return <div className="min-h-screen flex items-center justify-center text-sm text-muted-foreground">Loading DutyOnTrack...</div>
   }
   if (screen === 'setup') return <SetupWizard onComplete={onSetupComplete} />
+  if (screen === 'reset') return <ResetPasswordScreen
+    token={resetToken}
+    onSuccess={(data) => {
+      // Clean URL then route based on role
+      if (typeof window !== 'undefined') window.history.replaceState({}, '', window.location.pathname)
+      setUser(data.user); setAgency(data.agency)
+      setScreen(data.user.role === 'super_admin' ? 'superadmin' : 'app')
+    }}
+    onCancel={() => {
+      if (typeof window !== 'undefined') window.history.replaceState({}, '', window.location.pathname)
+      setScreen('landing')
+    }}
+  />
   if (screen === 'superadmin') return <SuperAdminApp user={user} onLogout={logout} />
   if (screen === 'landing') return <PremiumLanding onAuth={(mode) => { setAuthMode(mode); setScreen('auth') }} />
   if (screen === 'auth') return <AuthScreen initialMode={authMode} onSuccess={onAuthSuccess} onBack={() => setScreen('landing')} />

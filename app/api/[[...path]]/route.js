@@ -2,6 +2,7 @@ import { MongoClient } from 'mongodb'
 import { v4 as uuidv4 } from 'uuid'
 import { NextResponse } from 'next/server'
 import crypto from 'crypto'
+import nodemailer from 'nodemailer'
 
 // ============ MongoDB ============
 let client
@@ -117,6 +118,27 @@ async function logSuperAudit(database, actorUserId, action, target, message, met
   await database.collection('super_audit').insertOne({
     id: uuidv4(), actorUserId, action, target, message, meta, createdAt: new Date(),
   })
+}
+
+// ============ Email (Gmail SMTP) ============
+let mailer
+function getMailer() {
+  if (mailer) return mailer
+  const user = process.env.SMTP_USER
+  const pass = process.env.SMTP_PASS
+  if (!user || !pass) return null
+  mailer = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user, pass: pass.replace(/\s+/g, '') },
+  })
+  return mailer
+}
+
+async function sendEmail({ to, subject, html, text }) {
+  const m = getMailer()
+  if (!m) throw new Error('Email service not configured (SMTP_USER/SMTP_PASS missing)')
+  const from = process.env.SMTP_FROM || `DutyOnTrack <${process.env.SMTP_USER}>`
+  return m.sendMail({ from, to, subject, text, html })
 }
 
 // Default plans seed
@@ -379,6 +401,81 @@ async function handleRoute(request, { params }) {
       if (!auth) return err('Unauthorized', 401)
       const agency = await database.collection('agencies').findOne({ id: auth.agencyId })
       return json({ user: clean(auth.user), agency: clean(agency) })
+    }
+
+    // ============ FORGOT / RESET PASSWORD ============
+    if (route === '/auth/forgot-password' && method === 'POST') {
+      const b = await request.json()
+      const email = String(b.email || '').toLowerCase().trim()
+      if (!email) return err('email required')
+      const user = await database.collection('users').findOne({ email })
+      // Always respond success (do not leak whether email exists)
+      if (user) {
+        const token = crypto.randomBytes(32).toString('hex')
+        const tokenHash = crypto.createHash('sha256').update(token).digest('hex')
+        const expiresAt = new Date(Date.now() + 60 * 60 * 1000) // 1 hour
+        await database.collection('users').updateOne(
+          { id: user.id },
+          { $set: { resetTokenHash: tokenHash, resetTokenExpiresAt: expiresAt } }
+        )
+        const base = process.env.NEXT_PUBLIC_BASE_URL || `${request.headers.get('x-forwarded-proto') || 'https'}://${request.headers.get('host')}`
+        const resetUrl = `${base}/?reset_token=${token}`
+        const settings = await database.collection('platform_settings').findOne({ id: 'platform_settings' })
+        const brand = settings?.platformName || 'DutyOnTrack'
+        const supportEmail = settings?.supportEmail || process.env.SMTP_USER
+        const html = `
+          <div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#0f172a">
+            <div style="background:linear-gradient(135deg,#22D3EE,#6366F1,#A855F7);padding:16px 20px;border-radius:14px 14px 0 0;color:#fff">
+              <div style="font-size:20px;font-weight:800;letter-spacing:-.5px">${brand}</div>
+              <div style="font-size:12px;opacity:.85">Password reset request</div>
+            </div>
+            <div style="border:1px solid #e5e7eb;border-top:0;border-radius:0 0 14px 14px;padding:24px;background:#fff">
+              <p style="font-size:15px">Hi <b>${user.name || 'there'}</b>,</p>
+              <p style="font-size:14px;color:#334155">We received a request to reset the password on your ${brand} account (<b>${user.email}</b>).</p>
+              <p style="font-size:14px;color:#334155">Click the button below to set a new password. This link expires in <b>1 hour</b>.</p>
+              <div style="text-align:center;margin:24px 0">
+                <a href="${resetUrl}" style="display:inline-block;padding:12px 28px;background:linear-gradient(135deg,#22D3EE,#6366F1,#A855F7);color:#fff;text-decoration:none;border-radius:10px;font-weight:600;font-size:14px">Reset my password</a>
+              </div>
+              <p style="font-size:12px;color:#64748b">Or copy this URL into your browser:<br><span style="word-break:break-all;color:#334155">${resetUrl}</span></p>
+              <hr style="border:0;border-top:1px solid #e5e7eb;margin:20px 0"/>
+              <p style="font-size:12px;color:#64748b">If you did not request this, you can safely ignore this email — your password will remain unchanged. All your agency data, staff, clients and placements remain intact.</p>
+              <p style="font-size:12px;color:#64748b">Need help? Reply to this email or contact <a href="mailto:${supportEmail}" style="color:#6366F1">${supportEmail}</a>.</p>
+            </div>
+            <div style="text-align:center;color:#94a3b8;font-size:11px;margin-top:14px">© ${new Date().getFullYear()} ${brand}</div>
+          </div>`
+        const text = `Reset your ${brand} password: ${resetUrl}\n\nThis link expires in 1 hour. If you didn't request this, ignore this email.`
+        try {
+          await sendEmail({ to: email, subject: `Reset your ${brand} password`, html, text })
+        } catch (e) {
+          console.error('Email send failed:', e.message)
+          return err('Failed to send email. Please try again or contact support.', 500)
+        }
+      }
+      return json({ ok: true, message: 'If that email is registered, a reset link has been sent.' })
+    }
+
+    if (route === '/auth/reset-password' && method === 'POST') {
+      const b = await request.json()
+      const token = String(b.token || '').trim()
+      const newPassword = String(b.newPassword || '')
+      if (!token || !newPassword) return err('token and newPassword required')
+      if (newPassword.length < 6) return err('Password must be at least 6 characters')
+      const tokenHash = crypto.createHash('sha256').update(token).digest('hex')
+      const user = await database.collection('users').findOne({ resetTokenHash: tokenHash })
+      if (!user) return err('Invalid or already-used reset link', 400)
+      if (!user.resetTokenExpiresAt || new Date(user.resetTokenExpiresAt) < new Date()) {
+        return err('Reset link expired. Please request a new one.', 400)
+      }
+      await database.collection('users').updateOne(
+        { id: user.id },
+        {
+          $set: { passwordHash: hashPassword(newPassword) },
+          $unset: { resetTokenHash: '', resetTokenExpiresAt: '' },
+        }
+      )
+      const newToken = createToken({ userId: user.id, agencyId: user.agencyId, role: user.role })
+      const agency = user.agencyId ? await database.collection('agencies').findOne({ id: user.agencyId }) : null
+      return json({ ok: true, token: newToken, user: clean(user), agency: clean(agency) })
     }
 
     // All below require auth
